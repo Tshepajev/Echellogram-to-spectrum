@@ -1,18 +1,21 @@
 # Author: Jasper Ristkok
-# v1.0
+# v1.2
 
 # Code to convert an echellogram (photo) to spectrum
 
 
-
-use_sample = 'DHLamp_' #'Hg_lamp' #'W_Lamp'
-integral_width = 5
+# '14IWG1A_11a_P11_gate_1000ns_delay_1000ns' '492_2X8_R7C3C7_0001 2X08 - R7 C3-C7' 'Aryelle'
+# 'Plansee_W_3us_gate' 'Plansee_W_' 'IU667_D10_4us' 'IU667_D10' 'integrating_sphere_100ms_10avg_fiber600umB' 
+# 'DHLamp_' 'Hg_lamp' 'W_Lamp' 'Ne_lamp_100ms_fiber600umB'
+use_sample = 'IU667_D10'
+integral_width = 10
+first_order_nr = 36
 
 ##############################################################################################################
 # IMPORTS
 ##############################################################################################################
 from matplotlib import pyplot as plt
-#import matplotlib.colors as mcolors
+import matplotlib.colors as mcolors
 #import scipy.stats
 import math
 #import scipy.optimize
@@ -39,7 +42,8 @@ from  matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationTool
 ##############################################################################################################
 
 working_path = 'D:\\Research_analysis\\Projects\\2024_JET\\Lab_comparison_test\\Photo_to_spectrum\\Photos_spectra_comparison\\'
-input_path = working_path + 'Input\\'
+input_photos_path = working_path + 'Input_photos\\'
+input_data_path = working_path + 'Input_data\\'
 averaged_path = working_path + 'Averaged\\'
 output_path = working_path + 'Output\\'
 spectrum_path = working_path + 'Spectra\\'
@@ -69,50 +73,43 @@ def main_program():
 
 def prepare_photos():
     # Get files
-    input_files = get_folder_files(input_path)
+    input_files = get_folder_files(input_photos_path, identificator = use_sample)
     averaged_files = get_folder_files(averaged_path)
-    
-    # Get output file identificator
-    name = input_files[0] # identificator_0025.tif
-    pattern = r'^(.+?)_\d+?\.tif$' # (any characters), _, digits, ., tif
-    identificator = re.search(pattern, name)
-    if identificator: # match found, extract value
-        identificator = identificator.group(1)
-    else: # no match
-        identificator = ''
     
     exif_data = None
     
-    averaged_name = 'average_' + identificator + '.tif'
+    averaged_name = 'average_' + use_sample + '.tif'
     if averaged_name in averaged_files: # averaging done previously
         average_array, exif_data = load_photo(averaged_path + averaged_name)
     
     # Average all photos in input folder and save averaged photo into averaged folder
     else:
         average_array, exif_data = average_photos(input_files)
-        output_averaged_photo(average_array, output_path, identificator, exif_data)
+        output_averaged_photo(average_array, output_path, use_sample, exif_data)
     
     # Convert spectra to photos for GIMP or something else
     spectra_to_photos()
     
-    return average_array, identificator
+    return average_array, use_sample
+
 
 
 def average_photos(input_files):
     
     # Initialize averaging variables
-    count = len(input_files)
+    count = 0
     sum = None
     
     # iterate over files
     for filename in input_files:
-        imArray, exif_data = load_photo(input_path + filename)
+        imArray, exif_data = load_photo(input_photos_path + filename)
         
         # sum arrays
         if sum is None: # initialize
             sum = imArray
         else:  # add
             sum += imArray
+        count += 1
     
     average = sum / count
     return average, exif_data
@@ -167,13 +164,13 @@ def process_photo(photo_array, identificator):
     
     
     # Load calibration data if it exists
-    calibr_data = load_calibration_data()
+    calibr_data, vertical_calibration_array = load_calibration_data()
     
     #calibration_window(photo_array)
     
     tkinter_master = tkinter.Tk()
     try:
-        window = calibration_window(tkinter_master, photo_array, calibration_dict = calibr_data)
+        window = calibration_window(tkinter_master, photo_array, calibration_dict = calibr_data, order_bounds = vertical_calibration_array)
         tkinter_master.mainloop() # run tkinter (only once)
     finally:
         # When code crashes or debugging is stopped then the tkinter object isn't destroyed in Spyder
@@ -189,19 +186,28 @@ def process_photo(photo_array, identificator):
     return
 
 def load_calibration_data():
-    data = None
+    calibration_data = None
     
     output_files = get_folder_files(output_path)
     
     if 'calibration_data.json' in output_files: # calibration done previously
         with open(output_path + 'calibration_data.json', 'r') as file:
             try:
-                data = json.load(file)
+                calibration_data = json.load(file)
             except: # e.g. file is empty
                 pass
     
-    return data
+    input_data_files = get_folder_files(input_data_path)
+    if 'Vertical_points.csv' in input_data_files:
+        vertical_calibration_array = np.loadtxt(input_data_path + 'Vertical_points.csv', delimiter = ',', skiprows = 1)
+        
+            
+            
+    return calibration_data, vertical_calibration_array
 
+###########################################################################################
+# Generic point class
+###########################################################################################
 
 # A point on a graph
 class point_class():
@@ -229,6 +235,10 @@ class point_class():
             sum += (point2.z - self.z) ** 2
         
         return np.sqrt(sum)
+
+###########################################################################################
+# Points classes
+###########################################################################################
 
 # Hold calibration data in this format (same as dictionary). x is horizontal and y vertical pixels
 class calibration_data():
@@ -309,6 +319,8 @@ class end_points(calibration_data):
 class order_points(calibration_data):
     def __init__(self, image_width = None, existing_data = None):
         super().__init__(image_width)
+        self.order_nr = -1
+        self.bounds = (None, None)
         
         if existing_data is None:
             '''
@@ -325,14 +337,89 @@ class order_points(calibration_data):
         
         self.update()
 
-
+###########################################################################################
+# Main class
+###########################################################################################
 
 # Window to calibrate the echellogram to spectrum curves
 class calibration_window():
-    def __init__(self, parent, photo_array, calibration_dict = None):
+    
+    # Main code
+    def __init__(self, parent, photo_array, calibration_dict = None, order_bounds = None):
+        
+        # Initialize argument variables
         self.root = parent
         self.photo_array = photo_array
+        self.order_bounds = order_bounds
         
+        # Initialize class variables
+        self.init_class_variables()
+        
+        # Load input data
+        self.load_data(calibration_dict)
+        
+        # Draw main window and tkinter elements
+        self.initialize_window_elements()
+        
+        # Draw matplotlib plot
+        self.initialize_plot()
+        
+        # Draw tkinter window elements
+        self.pack_window_elements()
+        
+    
+    #######################################################################################
+    # Initialize class
+    #######################################################################################
+    
+    def init_class_variables(self):
+        self.working_path = working_path
+        self.first_order_nr = first_order_nr
+        self.integral_width = integral_width
+        
+        self.show_verticals = False
+        self.show_orders = True
+        self.autoupdate_spectrum = True
+        self.program_mode = None
+        self.selected_order = None
+        self.best_order_idx = None
+        
+        self.order_plot_curves = []
+        self.order_plot_points = []
+        self.order_poly_coefs = []
+        self.order_bound_points = []
+        
+        # dictionary to store three calibration things (start and end vertical, nr of horizontal)
+        self.calib_data = {}
+    
+    def load_data(self, calibration_dict):
+        
+        # initialize calib_data with photo_array bounds for better plotting
+        if calibration_dict is None:
+            self.calib_data['start'] = start_points(image_width = self.photo_array.shape[0])
+            self.calib_data['end'] = end_points(image_width = self.photo_array.shape[0])
+            self.calib_data['orders'] = [order_points(image_width = self.photo_array.shape[0])]
+            
+            
+        else: # load saved data
+            self.calib_data['start'] = start_points(existing_data = calibration_dict['start'])
+            self.calib_data['end'] = end_points(existing_data = calibration_dict['end'])
+            
+            # Iterate over orders
+            self.calib_data['orders'] = []
+            for order_raw in calibration_dict['orders']:
+                self.calib_data['orders'].append(order_points(existing_data = order_raw))
+                
+                
+            # sort orders by average y values
+            self.sort_orders(sort_plots = False)
+    
+    #######################################################################################
+    # Tkinter window elements
+    #######################################################################################
+    
+    # Create tkinter window elements
+    def initialize_window_elements(self):
         #self.root.winfo_width()
         #self.root.winfo_height()
         #self.root.winfo_screenwidth()
@@ -343,48 +430,81 @@ class calibration_window():
         
         self.frame_spectrum = tkinter.Frame(self.root)#, height = self.root.winfo_height() / 3)
         self.frame_buttons_image = tkinter.Frame(self.root)
-        self.frame_buttons = tkinter.Frame(self.frame_buttons_image)
         self.frame_image = tkinter.Frame(self.frame_buttons_image)
+        self.frame_buttons_input = tkinter.Frame(self.frame_buttons_image)
+        self.frame_input = tkinter.Frame(self.frame_buttons_input)
+        self.frame_buttons = tkinter.Frame(self.frame_buttons_input)
         
-        self.program_mode = None
-        self.selected_order = None
-        self.calib_data = {} # dictionary to store three calibration things (start and end vertical, nr of horizontal)
+        # Inputs
+        self.input_path_var = tkinter.StringVar()
+        self.input_order_var = tkinter.StringVar()
+        self.integral_width_var = tkinter.StringVar()
+        input_path_label = tkinter.Label(self.frame_input, text = 'Directory path:')
+        input_path = tkinter.Entry(self.frame_input, textvariable = self.input_path_var)
+        input_order_label = tkinter.Label(self.frame_input, text = 'First order nr:')
+        input_order = tkinter.Entry(self.frame_input, textvariable = self.input_order_var)
+        input_width_label = tkinter.Label(self.frame_input, text = 'Integral width:')
+        input_width = tkinter.Entry(self.frame_input, textvariable = self.integral_width_var)
+        save_variables_btn = tkinter.Button(self.frame_input, text = "Save variables", command = self.save_variables)
         
-        self.load_data(calibration_dict)
+        self.input_path_var.set(str(self.working_path))
+        self.input_order_var.set(str(self.first_order_nr))
+        self.integral_width_var.set(str(self.integral_width))
         
+        input_path_label.grid(row = 0, column = 0)
+        input_path.grid(row = 0, column = 1)
+        input_order_label.grid(row = 1, column = 0)
+        input_order.grid(row = 1, column = 1)
+        input_width_label.grid(row = 2, column = 0)
+        input_width.grid(row = 2, column = 1)
+        save_variables_btn.grid(row = 3, column = 0)
+        
+        
+        # Labels
+        self.feedback_label = tkinter.Label(self.frame_buttons, text = '')
+        self.feedback_label.pack(side = 'top')
         
         
         # Create buttons
+        self.load_order_points_btn = tkinter.Button(self.frame_buttons, text = "Load order points", command = self.load_order_points)
+        self.button_save_coefs_btn = tkinter.Button(self.frame_buttons, text = "Output stuff", command = self.write_outputs)
+        self.button_save_btn = tkinter.Button(self.frame_buttons, text = "Save calibr points", command = self.save_data)
         self.button_reset_btn = tkinter.Button(self.frame_buttons, text = "Reset mode", command = self.reset_mode)
         self.vertical_mode_btn = tkinter.Button(self.frame_buttons, text = "Vertical curve edit mode", command = self.bounds_mode)
         self.orders_mode_btn = tkinter.Button(self.frame_buttons, text = "Diffr order curve edit mode", command = self.orders_mode)
-        self.button_save_btn = tkinter.Button(self.frame_buttons, text = "Save data", command = self.save_data)
+        self.orders_tidy_btn = tkinter.Button(self.frame_buttons, text = "Tidy order points", command = self.orders_tidy)
+        
         
         self.add_order_btn = tkinter.Button(self.frame_buttons, text = "Add diffr order", command = self.add_order)
+        
+        self.toggle_spectrum_update_btn = tkinter.Button(self.frame_buttons, text = "Toggle spectrum updating", command = self.toggle_spectrum_update)
+        self.toggle_show_orders_btn = tkinter.Button(self.frame_buttons, text = "Toggle showing orders", command = self.toggle_show_orders)
         #self.add_point_left = tkinter.Button(self.frame_buttons, text = "Add point to left vertical", command = self.add_calibr_point_left)
         #self.add_point_right = tkinter.Button(self.frame_buttons, text = "Add point to right vertical", command = self.add_calibr_point_right)
         #self.add_point_order = tkinter.Button(self.frame_buttons, text = "Add point to order", command = self.add_calibr_point_order)
         self.spectrum_log_btn = tkinter.Button(self.frame_buttons, text = "Toggle spectrum log scale", command = self.spectrum_toggle_log)
-        self.image_int_down_btn = tkinter.Button(self.frame_buttons, text = "Lower colorbar max", command = self.image_int_down)
-        self.image_int_up_btn = tkinter.Button(self.frame_buttons, text = "Raise colorbar max", command = self.image_int_up)
-        self.image_int_min_down_btn = tkinter.Button(self.frame_buttons, text = "Lower colorbar min", command = self.image_int_min_down)
-        self.image_int_min_up_btn = tkinter.Button(self.frame_buttons, text = "Raise colorbar min", command = self.image_int_min_up)
+        self.image_int_down_btn = tkinter.Button(self.frame_buttons, text = "Lower colorbar max x2", command = self.image_int_down)
+        self.image_int_up_btn = tkinter.Button(self.frame_buttons, text = "Raise colorbar max x5", command = self.image_int_up)
+        self.image_int_min_down_btn = tkinter.Button(self.frame_buttons, text = "Lower colorbar min x2", command = self.image_int_min_down)
+        self.image_int_min_up_btn = tkinter.Button(self.frame_buttons, text = "Raise colorbar min x5", command = self.image_int_min_up)
         
         # Show buttons
+        self.load_order_points_btn.pack()
+        self.button_save_coefs_btn.pack()
         self.button_save_btn.pack()
+        self.toggle_spectrum_update_btn.pack()
         self.button_reset_btn.pack()
         self.vertical_mode_btn.pack()
         self.orders_mode_btn.pack()
+        self.orders_tidy_btn.pack()
         self.add_order_btn.pack()
         self.spectrum_log_btn.pack()
+        self.toggle_show_orders_btn.pack()
+        
         self.image_int_down_btn.pack()
         self.image_int_up_btn.pack()
         self.image_int_min_down_btn.pack()
         self.image_int_min_up_btn.pack()
-        
-        
-        # some tkinter classes like BaseWidget() assume tkinter is imported as "tk" 
-        #self.tk = tkinter
         
         self.root.title("Echellogram calibration")
         #self.root.configure(background="yellow")
@@ -394,42 +514,106 @@ class calibration_window():
         
         #self.root.update()
         
-        #self.submit = tkinter.Button(self, text="Submit", command = self.create_label)
-        
-        #tkinter.Label(root, image=image).pack()
-        self.draw_plot(identificator = '')
-        
-        self.draw_calibr_curves()
-        
-        self.draw_spectrum()
-        
-        # Draw things
+    # Draw window elements
+    def pack_window_elements(self):
         self.frame_buttons_image.pack(fill='both', expand=1, side = 'top')
         self.frame_spectrum.pack(fill='both', expand=1, side = 'top')
-        self.frame_buttons.pack(side = 'left')
-        self.frame_image.pack(side = 'left')
+        self.frame_buttons_input.pack(side = 'left')
+        self.frame_image.pack(fill='both', expand=1, side = 'left')
+        self.frame_input.pack(side = 'top')
+        self.frame_buttons.pack(side = 'top')
+        
+        
         
     
-    def load_data(self, calibration_dict):
+    #######################################################################################
+    # Button functions
+    #######################################################################################
+    
+    def save_variables(self):
+        self.working_path = self.input_path_var.get()
+        self.first_order_nr = int(self.input_order_var.get())
+        self.integral_width = float(self.integral_width_var.get())
         
-        # initialize calib_data with photo_array bounds for better plotting
-        if calibration_dict is None:
-            self.calib_data['start'] = start_points(image_width = self.photo_array.shape[0])
-            self.calib_data['end'] = end_points(image_width = self.photo_array.shape[0])
-            self.calib_data['orders'] = [order_points(image_width = self.photo_array.shape[0])]
+        global input_photos_path, input_data_path, averaged_path, output_path, spectrum_path
+        input_photos_path = self.working_path + 'Input_photos\\'
+        input_data_path = self.working_path + 'Input_data\\'
+        averaged_path = self.working_path + 'Averaged\\'
+        output_path = self.working_path + 'Output\\'
+        spectrum_path = self.working_path + 'Spectra\\'
         
-        else: # load saved data
-            self.calib_data['start'] = start_points(existing_data = calibration_dict['start'])
-            self.calib_data['end'] = end_points(existing_data = calibration_dict['end'])
+        # Empty the variables
+        #self.input_path_var.set('')
+        #self.input_order_var.set('')
+        #self.integral_width_var.set('')
+        
+        self.update_all()
+        
+        self.set_feedback('Input variables saved')
+    
+    
+    # Read in csv file and overwrite order points based on these
+    def load_order_points(self):
+        
+        all_points = np.loadtxt(input_data_path + 'Order_points.csv', delimiter=',', skiprows = 1)
+        
+        for idx in range(len(self.calib_data['orders'])):
+            order = self.calib_data['orders'][idx]
             
+            # get order_nr row index from data
+            order_nr = order.order_nr
+            row_idxs = np.where(all_points[:,0] == order_nr)[0] # get indices of rows where order nr is the same
             
-            # Iterate over orders
-            self.calib_data['orders'] = []
-            for order_raw in calibration_dict['orders']:
-                self.calib_data['orders'].append(order_points(existing_data = order_raw))
+            # Get bounds
+            if len(row_idxs) > 0: # There's match
+                row_idx = row_idxs[0]
+                order.points[0].x = all_points[row_idx, 1]
+                order.points[0].y = all_points[row_idx, 2]
+                order.points[1].x = all_points[row_idx, 3]
+                order.points[1].y = all_points[row_idx, 4]
+                order.points[2].x = all_points[row_idx, 5]
+                order.points[2].y = all_points[row_idx, 6]
+        
+        self.update_all()
+        self.set_feedback('Order points loaded')
+        
+    def write_outputs(self):
+       self.output_coefs()
+       self.output_order_points()
+       self.set_feedback('Output written')
+   
+    # Save the polynomial coefficients of diffraction orders into output
+    def output_coefs(self):
+        
+        with open(output_path + 'order_coefficients.csv', 'w') as file:
+            file.write('Order_nr,Coef1,Coef2,Coef3\n') # headers
+            
+            for idx in range(len(self.calib_data['orders'])):
+                order = self.calib_data['orders'][idx]
+                coefs = self.order_poly_coefs[idx]
+                file.write(str(order.order_nr))
                 
-            # sort orders by average y values
-            self.calib_data['orders'].sort(key=lambda x: x.avg_y, reverse=True)
+                for coef in coefs:
+                    file.write(',' + str(coef))
+                
+                file.write('\n')
+        
+        
+    
+    def output_order_points(self):
+        with open(output_path + 'order_points.csv', 'w') as file:
+            file.write('Order_nr,Point0_x,Point0_y,Point1_x,Point1_y,Point2_x,Point2_y\n') # headers
+            
+            for idx in range(len(self.calib_data['orders'])):
+                order = self.calib_data['orders'][idx]
+                file.write(str(order.order_nr))
+                
+                for point in order.points:
+                    file.write(',' + str(point.x))
+                    file.write(',' + str(point.y))
+                
+                file.write('\n')
+        
     
     # Save calibration curves and the corresponding points
     def save_data(self):
@@ -447,21 +631,65 @@ class calibration_window():
         # Save as JSON readable output
         with open(output_path + 'calibration_data.json', 'w') as file:
             json.dump(save_dict, file, sort_keys=True, indent=4)
-    
+            
+        self.set_feedback('Calibration data saved')
     
     
     def reset_mode(self):
         self.program_mode = None
         self.selected_order = None
+        
+        self.show_verticals = False
+        self.hide_unhide_verticals()
+        
+        self.set_feedback('Mode: reset', 1000)
+        
+        
     def bounds_mode(self):
         self.program_mode = 'bounds'
         self.selected_order = None
+        
+        self.show_verticals = True
+        self.hide_unhide_verticals()
+        
+        self.set_feedback('Mode: vertical curves', 1000)
+        
+        
     def orders_mode(self):
         self.program_mode = 'orders'
         self.selected_order = None
+        
+        self.show_orders = True
+        #self.update_order_curves()
+        self.hide_unhide_orders()
+        
+        self.set_feedback('Mode: horizontal curves', 1000)
     
+    # Overwrite the order points with the ones calculated from polynomials
+    def orders_tidy(self):
+        start_x = 20
+        center_x = math.floor(self.photo_array.shape[0] / 2)
+        end_x = self.photo_array.shape[0] - 20
+        
+        for idx in range(len(self.calib_data['orders'])):
+            order = self.calib_data['orders'][idx]
+            
+            order.points[0].x = start_x
+            order.points[0].y = poly_func_value(start_x, self.order_poly_coefs[idx])
+            order.points[1].x = center_x
+            order.points[1].y = poly_func_value(center_x, self.order_poly_coefs[idx])
+            order.points[2].x = end_x
+            order.points[2].y = poly_func_value(end_x, self.order_poly_coefs[idx])
+            
+    
+        self.update_all()
     
     def add_order(self):
+        
+        # Show orders
+        self.show_orders = True
+        self.hide_unhide_orders()
+        
         diffr_order = order_points(self.photo_array.shape[0])
         self.calib_data['orders'] += [diffr_order]
         self.plot_order(diffr_order)
@@ -472,39 +700,71 @@ class calibration_window():
         self.selected_order = diffr_order
         self.best_order_idx = len(self.calib_data['orders']) - 1
         
+        # Calculate the bounds for that order
+        self.initialize_bounds(self.best_order_idx)
+        self.draw_bounds(self.best_order_idx)
+        
+        self.sort_orders()
+        
         # Draw plot again and wait for drawing to finish
         self.canvas.draw()
         self.canvas.flush_events() 
         
-        #self.update_order_curves()
-        self.update_spectrum()
         
-        xdata = self.spectrum_curve.get_xdata()
-        self.spectrum_ax.set_xlim(min(xdata), max(xdata))
+        
+        #self.update_order_curves()
+        self.update_spectrum(autoscale = True)
+        
+        #xdata = self.spectrum_curve.get_xdata()
+        #self.spectrum_ax.set_xlim(min(xdata), max(xdata))
         
         # Draw plot again and wait for drawing to finish
         self.canvas_spectrum.draw()
-        self.canvas_spectrum.flush_events() 
+        self.canvas_spectrum.flush_events()
+        
+        self.set_feedback('Order added and selected', 1000)
     
     def spectrum_toggle_log(self):
         current_scale = self.spectrum_ax.get_yscale()
         if current_scale == 'symlog':
             self.spectrum_ax.set_yscale('linear')
+            current_scale = 'linear'
         else:
             self.spectrum_ax.set_yscale('symlog') # symlog for 0-values
+            current_scale = 'symlog'
         
         # Draw plot again and wait for drawing to finish
         self.canvas_spectrum.draw()
-        self.canvas_spectrum.flush_events() 
+        self.canvas_spectrum.flush_events()
         
+        self.set_feedback('New spectrum scale: ' + current_scale)
+    
+    def toggle_spectrum_update(self):
+        self.autoupdate_spectrum = not self.autoupdate_spectrum
+        
+        if self.autoupdate_spectrum:
+            # Show orders and update the data
+            self.show_orders = True
+            self.update_order_curves()
+            self.hide_unhide_orders()
+        
+        self.set_feedback('Spectrum updating: ' + str(self.autoupdate_spectrum))
+    
+    def toggle_show_orders(self):
+        self.show_orders = not self.show_orders
+        self.hide_unhide_orders()
+        self.set_feedback('Show orders: ' + str(self.show_orders))
+    
     def image_int_down(self):
         old_min = self.cbar.vmin
         old_max = self.cbar.vmax
-        self.image.set_clim(old_min, old_max / 5)
+        self.image.set_clim(old_min, old_max / 2)
         
         # Draw plot again and wait for drawing to finish
         self.canvas.draw()
         self.canvas.flush_events() 
+        
+        self.set_feedback('New max: ' + '{:.3e}'.format(old_max / 2), 5000)
     
     def image_int_up(self):
         old_min = self.cbar.vmin
@@ -514,15 +774,19 @@ class calibration_window():
         # Draw plot again and wait for drawing to finish
         self.canvas.draw()
         self.canvas.flush_events() 
+        
+        self.set_feedback('New max: ' + '{:.3e}'.format(old_max * 5), 5000)
     
     def image_int_min_down(self):
         old_min = self.cbar.vmin
         old_max = self.cbar.vmax
-        self.image.set_clim(old_min / 5, old_max)
+        self.image.set_clim(old_min / 2, old_max)
         
         # Draw plot again and wait for drawing to finish
         self.canvas.draw()
         self.canvas.flush_events() 
+        
+        self.set_feedback('New min: ' + '{:.3e}'.format(old_min / 2), 5000)
     
     def image_int_min_up(self):
         old_min = self.cbar.vmin
@@ -532,7 +796,28 @@ class calibration_window():
         # Draw plot again and wait for drawing to finish
         self.canvas.draw()
         self.canvas.flush_events() 
+        
+        self.set_feedback('New min: ' + '{:.3e}'.format(old_min * 5), 5000)
     
+    #######################################################################################
+    # Callbacks
+    #######################################################################################
+    
+    # Do stuff when tkinter window is resized
+    def resize_callback(self, event):
+        
+        new_plot_width = event.width / self.photo_fig.dpi
+        new_plot_height = event.height / self.photo_fig.dpi
+        self.photo_fig.set_size_inches(new_plot_width, new_plot_height, forward = True)
+        
+        self.photo_fig.subplots_adjust(left = 0.1, right = 0.9, top = 0.9, bottom = 0.1, wspace = 0.3)
+        
+        pos = self.plot_ax.get_position()
+        self.plot_ax.set_position([pos.x0, pos.y0, pos.width * 1.5, pos.height])
+        
+        self.canvas.draw_idle()
+        
+        
     def plot_click_callback(self, event):
         #print(event.xdata, event.ydata)
         
@@ -576,6 +861,9 @@ class calibration_window():
         # Modify horizontal curves
         elif self.program_mode == 'orders':
             
+            if not self.show_orders:
+                return
+            
             # Iterate over diffraction orders, select the point closest to the click
             min_distance = math.inf
             if self.selected_order is None:
@@ -591,6 +879,7 @@ class calibration_window():
                 
                 self.selected_order = self.calib_data['orders'][best_order_idx]
                 self.best_order_idx = best_order_idx # TODO: delete hack
+                self.set_feedback('Order ' + str(best_order_idx + self.first_order_nr) + 'selected')
                 return
             
             # Iterate over points of the selected orded
@@ -608,17 +897,51 @@ class calibration_window():
             self.calib_data['orders'][self.best_order_idx].points[best_point_idx] = click_point # TODO: delete hack 
             self.calib_data['orders'][self.best_order_idx].update()
             
+            # Calculate the bounds for that order
+            self.initialize_bounds(self.best_order_idx)
+            
             # sort orders by average y values
-            #self.calib_data['orders'].sort(key=lambda x: x.avg_y, reverse=True)
+            self.sort_orders()
             
             self.update_order_curves()
             
         
+        if (not self.autoupdate_spectrum) or (self.program_mode is None):
+            return
+            
         # Redraw plot
-        if not (self.program_mode is None):
-            self.update_spectrum()
+        self.update_spectrum()
     
     
+    
+    #######################################################################################
+    # Initialize Matplotlib plot
+    #######################################################################################
+    
+    def initialize_plot(self):
+        
+        # Draw main image
+        self.draw_plot(identificator = '')
+        
+        # Draw calibration curves
+        self.draw_calibr_curves()
+        
+        # Initialize bounds of diffraction orders, requires plots to be drawn
+        self.calculate_all_bounds(initialize_x = True)
+        
+        # TODO: fix bounds not being drawn initially (because self.calculate_bounds assumes plotted curves)
+        self.update_order_curves()
+        
+        # Compile spectrum from diffraction orders and the bounds
+        self.draw_spectrum()
+        
+        # Draw plots again and wait for drawing to finish
+        self.canvas.draw()
+        self.canvas.flush_events()
+        self.canvas_spectrum.draw()
+        self.canvas_spectrum.flush_events() 
+    
+    # Draw main heatmap
     def draw_plot(self, identificator = ''):
         self.photo_fig = plt.figure()
         
@@ -626,27 +949,30 @@ class calibration_window():
         self.canvas = FigureCanvasTkAgg(self.photo_fig, self.frame_image)
         toolbar = NavigationToolbar2Tk(self.canvas, self.frame_image)
         toolbar.update()
-        self.canvas._tkcanvas.pack(fill='both', expand=1, side = 'left')
-        
-        self.canvas.mpl_connect('button_press_event', self.plot_click_callback)
-        #matplotlib.backend_bases.MouseEvent
-        
-        #draw_pyplot(photo_array, root_fig = self.photo_fig, identificator = '')
-        self.format_plot()
-        
-    
-    def format_plot(self):
+        self.canvas._tkcanvas.pack(fill='both', expand=1, side = 'top')
         
         # x-axis to the top of the image
         self.plot_ax = self.photo_fig.gca()
         self.plot_ax.xaxis.tick_top()
-        plt.tight_layout()
+        
         
         # Show image and colorbar
-        self.image = plt.imshow(self.photo_array, norm = 'log')
+        self.image = plt.imshow(self.photo_array, norm = 'log', aspect = 'auto') # symlog scale min can't be modified
         self.cbar = plt.colorbar()
+        #self.photo_fig.tight_layout()
+        
+        self.canvas.mpl_connect('button_press_event', self.plot_click_callback)
+        #matplotlib.backend_bases.MouseEvent
+        
+        
+        
     
     def draw_calibr_curves(self):
+        self.plot_verticals()
+        self.plot_orders()
+        self.draw_all_bounds()
+    
+    def plot_verticals(self):
         # Get line data
         y_values = np.arange(self.photo_array.shape[0])
         left_curve_array, self.left_poly_coefs = get_polynomial_points(self.calib_data['start'], self.photo_array.shape[0], flip = True)
@@ -657,27 +983,25 @@ class calibration_window():
         self.end_curve, = self.plot_ax.plot(right_curve_array, y_values, 'tab:orange')
         
         # Plot calibration points
-        self.start_curve_points, = self.plot_ax.plot(self.calib_data['start'].xlist, self.calib_data['start'].ylist, color = 'k', marker = 'o', linestyle = '')
-        self.end_curve_points, = self.plot_ax.plot(self.calib_data['end'].xlist, self.calib_data['end'].ylist, color = 'k', marker = 'o', linestyle = '')
+        self.start_curve_points, = self.plot_ax.plot(self.calib_data['start'].xlist, self.calib_data['start'].ylist, color = 'k', marker = 'o', linestyle = '', markersize = 4)
+        self.end_curve_points, = self.plot_ax.plot(self.calib_data['end'].xlist, self.calib_data['end'].ylist, color = 'k', marker = 'o', linestyle = '', markersize = 4)
         
-        self.plot_orders()
+        # Hide if needed
+        self.hide_unhide_verticals()
     
-        
+    # Iterate over diffraction orders and plot them
     def plot_orders(self):
-        self.order_plot_curves = []
-        self.order_plot_points = []
-        self.order_poly_coefs = []
-        
-        # Iterate over diffraction orders
         x_values = np.arange(self.photo_array.shape[0])
-        for order in self.calib_data['orders']:
+        for idx in range(len(self.calib_data['orders'])):
+            order = self.calib_data['orders'][idx]
             self.plot_order(order, x_values)
-            
+        
     
     def plot_order(self, order, x_values = None):
         if x_values is None:
             x_values = np.arange(self.photo_array.shape[0])
-            
+        
+        
         # Get line data
         curve_array, poly_coefs = get_polynomial_points(order, self.photo_array.shape[0])
         self.order_poly_coefs.append(poly_coefs)
@@ -687,13 +1011,89 @@ class calibration_window():
         self.order_plot_curves.append(curve)
         
         # Plot calibration points
-        curve_points, = self.plot_ax.plot(order.xlist, order.ylist, color = 'r', marker = 'o', linestyle = '')
+        curve_points, = self.plot_ax.plot(order.xlist, order.ylist, color = mcolors.CSS4_COLORS['peru'], marker = 'o', linestyle = '', markersize = 4)
         self.order_plot_points.append(curve_points)
         
+    # Draw points for the bounds even if they aren't calculated correctly yet
+    def draw_all_bounds(self):
+        for order_idx in range(len(self.calib_data['orders'])):
+            self.draw_bounds(order_idx)
     
+    def draw_bounds(self, order_idx):
+        x_start, x_end, y_start, y_end = self.calculate_bounds(order_idx, initialize_x = True)
+        
+        bound_points, = self.plot_ax.plot([x_start, x_end], [y_start, y_end], color = 'k', marker = 'x', linestyle = '', markersize = 2)
+        self.order_bound_points.append(bound_points)
+    
+    def draw_spectrum(self):
+        self.spectrum_fig = plt.figure()
+        
+        # Attach figure to the Tkinter frame
+        self.canvas_spectrum = FigureCanvasTkAgg(self.spectrum_fig, self.frame_spectrum)
+        toolbar = NavigationToolbar2Tk(self.canvas_spectrum, self.frame_spectrum)
+        toolbar.update()
+        self.canvas_spectrum._tkcanvas.pack(fill='both', expand=1, side = 'top')
+        
+        self.spectrum_ax = self.spectrum_fig.gca()
+        
+        # Plot curve
+        x_values, z_values = self.get_order_spectrum()
+        self.spectrum_curve, = self.spectrum_ax.plot(x_values, z_values, 'tab:pink')
+        
+        # rescale to fit
+        self.spectrum_ax.set_xlim(min(x_values), max(x_values))
+        self.spectrum_ax.set_ylim(min(z_values), max(z_values))
+        
+    
+    #######################################################################################
+    # Update visual things
+    #######################################################################################
+    
+    def clear_feedback(self):
+        self.feedback_label.config(text = '')
+    
+    def set_feedback(self, string, delay = 3000):
+        self.feedback_label.config(text = string)
+        self.feedback_label.after(delay, self.clear_feedback) # clear feedback after delay
+    
+    
+    def update_all(self):
+        
+        # Deselect order
+        self.best_order_idx = None
+        self.set_feedback('Order deselected')
+        
+        self.update_point_instances()
+        
+        self.update_vertical_curves()
+        self.update_order_curves()
+        
+        # sort orders by average y values
+        self.sort_orders()
+        
+        self.calculate_all_bounds(initialize_x = True)
+            
+        
+        self.update_spectrum(autoscale = True)
+        
+        # Draw things again and wait for drawing to finish
+        self.canvas.draw()
+        self.canvas.flush_events()
+        self.canvas_spectrum.draw()
+        self.canvas_spectrum.flush_events()
+    
+    # Update instances of point classes
+    def update_point_instances(self):
+        self.calib_data['start'].update()
+        self.calib_data['end'].update()
+        for idx in range(len(self.calib_data['orders'])):
+            self.calib_data['orders'][idx].update()
     
     # Redraw vertical calibration curves
     def update_vertical_curves(self):
+        
+        if not self.show_verticals:
+            return
         
         # points
         self.start_curve_points.set_xdata(self.calib_data['start'].xlist)
@@ -712,6 +1112,12 @@ class calibration_window():
         
         self.update_order_curves()
         
+        self.calculate_all_bounds(initialize_x = True, use_verticals = True)
+        
+        self.update_all_bounds(use_verticals = True) # TODO: fix hack (bounds need previous order update)
+        
+        self.set_feedback('Bounds overwritten with polynomial data', 5000)
+        
         # Draw plot again and wait for drawing to finish
         self.canvas.draw()
         self.canvas.flush_events() 
@@ -719,61 +1125,189 @@ class calibration_window():
     
     # Redraw horizontal calibration curves
     def update_order_curves(self):
+        
+        if (not self.show_orders) and (self.program_mode != 'bounds'):
+            return
+        
         # Iterate over diffraction orders
         for idx in range(len(self.calib_data['orders'])):
             order = self.calib_data['orders'][idx]
-            
-            # points
-            self.order_plot_points[idx].set_xdata(order.xlist)
-            self.order_plot_points[idx].set_ydata(order.ylist)
             
             # curve
             curve_array, poly_coefs = get_polynomial_points(order, self.photo_array.shape[0])
             self.order_poly_coefs[idx] = poly_coefs
             self.order_plot_curves[idx].set_ydata(curve_array)
             
-            # Draw plot again and wait for drawing to finish
-            self.canvas.draw()
-            self.canvas.flush_events() 
+            # Calculate the new bounds for that order
+            self.initialize_bounds(idx)
+            
+            # points
+            self.order_plot_points[idx].set_xdata(order.xlist)
+            self.order_plot_points[idx].set_ydata(order.ylist)
+        
+        
+        self.update_all_bounds()
+            
+            
+        # Draw plot again and wait for drawing to finish
+        self.canvas.draw()
+        self.canvas.flush_events() 
     
+    # TODO: vertical curve edit mode doesn't change bounds on graph
+    def update_all_bounds(self, use_verticals = False):
+        for idx in range(len(self.calib_data['orders'])):
+            self.update_one_bounds(idx, use_verticals = use_verticals)
+            
+    # Re-draw bounds
+    def update_one_bounds(self, order_idx, use_verticals = False):
+        x_start, x_end, y_start, y_end = self.calculate_bounds(order_idx, initialize_x = True, use_verticals = use_verticals)
+        self.order_bound_points[order_idx].set_xdata([x_start, x_end])
+        self.order_bound_points[order_idx].set_ydata([y_start, y_end])
+        
     
-    def draw_spectrum(self):
-        self.spectrum_fig = plt.figure()
-        
-        # Attach figure to the Tkinter frame
-        self.canvas_spectrum = FigureCanvasTkAgg(self.spectrum_fig, self.frame_spectrum)
-        toolbar = NavigationToolbar2Tk(self.canvas_spectrum, self.frame_spectrum)
-        toolbar.update()
-        self.canvas_spectrum._tkcanvas.pack(fill='both', expand=1, side = 'top')
-        
-        self.spectrum_ax = self.spectrum_fig.gca()
-        self.format_spectrum()
-        
-        # Plot curve
-        x_values, z_values = self.get_order_spectrum()
-        self.spectrum_curve, = self.spectrum_ax.plot(x_values, z_values, 'tab:pink')
-        
-    def format_spectrum(self):
-        #self.spectrum_ax.autoscale()
-        pass
-    
-    
-    def update_spectrum(self):
-        
-        x_values, z_values = self.get_order_spectrum()
-        
-        # Plot curve
-        self.spectrum_curve.set_xdata(x_values)
-        self.spectrum_curve.set_ydata(z_values)
-        
-        # rescale to fit
-        #self.spectrum_ax.set_xlim(min(x_values), max(x_values))
-        self.spectrum_ax.set_ylim(min(z_values), max(z_values))
+    def update_spectrum(self, autoscale = False):
+         
+         x_values, z_values = self.get_order_spectrum()
+         
+         # Plot curve
+         self.spectrum_curve.set_xdata(x_values)
+         self.spectrum_curve.set_ydata(z_values)
+         
+         # rescale to fit
+         if autoscale:
+             self.spectrum_ax.set_xlim(min(x_values), max(x_values))
+             self.spectrum_ax.set_ylim(min(z_values), max(z_values))
+         
+         # Draw plot again and wait for drawing to finish
+         self.canvas_spectrum.draw()
+         self.canvas_spectrum.flush_events() 
+     
+    def hide_unhide_verticals(self):
+        self.start_curve.set_visible(self.show_verticals)
+        self.start_curve_points.set_visible(self.show_verticals)
+        self.end_curve.set_visible(self.show_verticals)
+        self.end_curve_points.set_visible(self.show_verticals)
         
         # Draw plot again and wait for drawing to finish
-        self.canvas_spectrum.draw()
-        self.canvas_spectrum.flush_events() 
+        self.canvas.draw()
+        self.canvas.flush_events() 
     
+    def hide_unhide_orders(self):
+        
+        # Iterate over diffraction orders
+        for idx in range(len(self.calib_data['orders'])):
+            order = self.calib_data['orders'][idx]
+            
+            self.order_plot_curves[idx].set_visible(self.show_orders)
+            self.order_plot_points[idx].set_visible(self.show_orders)
+            self.order_bound_points[idx].set_visible(self.show_orders)
+        
+        # Draw plot again and wait for drawing to finish
+        self.canvas.draw()
+        self.canvas.flush_events() 
+            
+    
+    
+    #######################################################################################
+    # Misc
+    #######################################################################################
+    
+    def calculate_all_bounds(self, initialize_x = False, use_verticals = False):
+        for idx in range(len(self.calib_data['orders'])):
+            self.calculate_bounds(idx, initialize_x = initialize_x, use_verticals = use_verticals)
+    
+    def calculate_bounds(self, order_idx, initialize_x = False, use_verticals = False):
+        order = self.calib_data['orders'][order_idx]
+        (x_start, x_end) = order.bounds
+        
+        if initialize_x or use_verticals or (x_start is None) or (x_end is None):
+            x_start, x_end = self.initialize_bounds(order_idx, use_verticals = use_verticals)
+        
+        coefs = np.polynomial.polynomial.polyfit(order.xlist, order.ylist, 2)
+        y_start = poly_func_value(x_start, coefs)
+        y_end = poly_func_value(x_end, coefs)
+        
+        return x_start, x_end, y_start, y_end
+    
+    # Calculate bounds by the crossing of curves and save into order points class
+    def initialize_bounds(self, order_idx, use_verticals = False):
+        nr_pixels = self.photo_array.shape[0]
+        
+        curve_x = self.order_plot_curves[order_idx].get_xdata()
+        curve_y = self.order_plot_curves[order_idx].get_ydata()
+        
+        # sort the arrays in increasing x value
+        curve_x, curve_y = sort_related_arrays(curve_x, curve_y) 
+        
+        
+        # Calculate by vertical polynomials
+        if use_verticals or (self.order_bounds is None):
+            left_curve = self.start_curve.get_xdata()
+            right_curve = self.end_curve.get_xdata()
+            x_start, x_end = get_order_bounds(nr_pixels, curve_x, curve_y, left_curve, right_curve)
+        
+        # By default calculate by input data
+        else:
+            # get order_nr row index from data
+            order_nr = self.calib_data['orders'][order_idx].order_nr
+            row_idxs = np.where(self.order_bounds[:,0] == order_nr)[0] # get indices of rows where order nr is the same
+            
+            # Get bounds
+            if len(row_idxs) > 0: # There's match
+                row_idx = row_idxs[0]
+                x_start = self.order_bounds[row_idx, 1]
+                x_end = self.order_bounds[row_idx, 2]
+            else: # no match, use photo bounds
+                x_start = 0
+                x_end = nr_pixels
+        
+        self.calib_data['orders'][order_idx].bounds = (x_start, x_end)
+        
+        return x_start, x_end
+    
+        
+    def get_idx_by_order_nr(self, order_nr):
+        for idx in range(len(self.calib_data['orders'])):
+            order = self.calib_data['orders'][idx]
+            if order.order_nr == order_nr:
+                return idx
+        return None
+    
+   
+    
+    
+    
+    # Assumes that each order instance has been updated (avg_y is correct)
+    def sort_orders(self, sort_plots = True):
+        
+        # Get indices to sort by
+        y_values = [obj.avg_y for obj in self.calib_data['orders']]
+        sorted_idx = np.argsort(y_values) # top curves are low order nrs
+        
+        # Sort orders
+        #self.calib_data['orders'].sort(key=lambda x: x.avg_y, reverse=True)
+        self.calib_data['orders'] = [self.calib_data['orders'][idx] for idx in sorted_idx]
+        
+        # Sort corresponding plot objects if they're initialized
+        if sort_plots:
+            self.order_plot_points = [self.order_plot_points[idx] for idx in sorted_idx]
+            self.order_poly_coefs = [self.order_poly_coefs[idx] for idx in sorted_idx]
+            self.order_plot_curves = [self.order_plot_curves[idx] for idx in sorted_idx]
+            self.order_bound_points = [self.order_bound_points[idx] for idx in sorted_idx]
+        
+        # Save order number in objects
+        for idx in range(len(self.calib_data['orders'])):
+            order = self.calib_data['orders'][idx].order_nr = idx + self.first_order_nr
+            
+        # Re-select the correct order
+        idxs = np.where(sorted_idx == self.best_order_idx)[0] # get indices of rows where idx is the same
+        self.best_order_idx = None if len(idxs) == 0 else idxs[0]
+        
+    
+    
+    
+    
+   
     # Get z-values of corresponding x and y values and cut them according to left and right curves
     def get_order_spectrum(self):
         x_values = None
@@ -788,14 +1322,15 @@ class calibration_window():
         y3 = self.end_curve.get_ydata()
         
         # sort the arrays in increasing x value
-        x2, y2 = sort_connected_arrays(x2, y2)
-        x3, y3 = sort_connected_arrays(x3, y3)
+        x2, y2 = sort_related_arrays(x2, y2)
+        x3, y3 = sort_related_arrays(x3, y3)
         '''
         nr_pixels = self.photo_array.shape[0]
+        photo_pixels = np.arange(nr_pixels)
         
         # Compile z-data from the photo with all diffraction orders
-        photo_pixels = np.arange(nr_pixels)
-        for idx in range(len(self.calib_data['orders'])):
+        # Iterate over orders backwards because they are sorted by order nr (top to bottom)
+        for idx in range(len(self.calib_data['orders']) - 1, -1, -1):
             #order = self.calib_data['orders'][idx]
             
             #curve_x = photo_pixels
@@ -803,7 +1338,7 @@ class calibration_window():
             curve_y = self.order_plot_curves[idx].get_ydata()
             
             # sort the arrays in increasing x value
-            #curve_x, curve_y = sort_connected_arrays(curve_x, curve_y)
+            #curve_x, curve_y = sort_related_arrays(curve_x, curve_y)
             
             
             # Interpolate and get y-values of the calibration curve at every pixel
@@ -811,22 +1346,23 @@ class calibration_window():
             #y_pixels = y_pixels.astype(np.int32) # convert to same format as x-values
             y_pixels = curve_y.astype(np.int32) # convert to same format as x-values
             
-            left_curve = self.start_curve.get_xdata()
-            right_curve = self.end_curve.get_xdata()
+            #left_curve = self.start_curve.get_xdata()
+            #right_curve = self.end_curve.get_xdata()
             
             # Get bounds for this diffraction order
-            x_left, x_right = get_order_bounds(nr_pixels, curve_x, curve_y, left_curve, right_curve)
+            #x_left, x_right = get_order_bounds(nr_pixels, curve_x, curve_y, left_curve, right_curve)
             #x_left = get_polynomial_intersection(self.order_poly_coefs[idx], self.left_poly_coefs, nr_pixels, is_left = True)
             #x_right = get_polynomial_intersection(self.order_poly_coefs[idx], self.right_poly_coefs, nr_pixels, is_left = False)
             
             #print(x_left, x_right)
+            (x_left, x_right) = self.calib_data['orders'][idx].bounds
             
             # get z-values corresponding to the interpolated pixels on the order curve
-            for idx in range(len(photo_pixels)): # TODO: add width integration
+            for idx2 in range(len(photo_pixels)): # TODO: add width integration
                 
                 # Save px only if it's between left and right calibration curves
-                x_value = curve_x[idx]
-                y_value = y_pixels[idx]
+                x_value = curve_x[idx2]
+                y_value = y_pixels[idx2]
                 
                 if x_right is None:
                     pass
@@ -838,7 +1374,7 @@ class calibration_window():
                     else:
                         x_values.append(x_values[-1] + 1) # increment by 1
                     
-                    integral = integrate_order_width(self.photo_array, x_value, y_value, width = integral_width)
+                    integral = integrate_order_width(self.photo_array, x_value, y_value, width = self.integral_width)
                     z_values.append(integral) # x and y have to be switched (somewhy)
                 
         return x_values, z_values
@@ -858,20 +1394,23 @@ class calibration_window():
             return True
         return False
     
-    def create_label(self):
-        # Create two labels
-        tkinter.Label(self.root, text="Nothing will work unless you do.").pack()
-        tkinter.Label(self.root, text="- Maya Angelou").pack()
-    
-    def increase(self):
-        pass
-
 
 
 # Sum pixels around the order
+# If the width is even number then take asymmetrically one pixel from lower index
 def integrate_order_width(photo_array, x_pixel, y_pixel, width = 1):
+    width = round(width)
+    
+    if width == 1:
+        return photo_array[y_pixel, x_pixel]
+    
     integral = 0
-    for y_idx in range(y_pixel - round(width / 2), y_pixel + round(width / 2)):
+    x_pixel = clip(x_pixel, 0, photo_array.shape[0] - 1)
+    idx_lower = math.floor(width / 2)
+    idx_higher = math.ceil(width / 2) # range omits last value
+    for y_idx in range(y_pixel - idx_lower, y_pixel + idx_higher):
+        y_idx = clip(y_idx, 0, photo_array.shape[0] - 1)
+        
         integral += photo_array[y_idx, x_pixel] # x and y have to be switched (somewhy)
     
     return integral
@@ -980,11 +1519,15 @@ def calc_polynomial_intersection(coefs1, coefs2):
 
 
 # sort the arrays in increasing value or first array
-def sort_connected_arrays(arr1, arr2):
+def sort_related_arrays(arr1, arr2_list):
     sort_idx = np.argsort(arr1)
     arr1 = arr1[sort_idx]
-    arr2 = arr2[sort_idx]
-    return arr1, arr2
+    if type(arr2_list) == 'list':
+        for idx in range(len(arr2_list)):
+            arr2_list[idx] = arr2_list[idx][sort_idx]
+    else: # not list but single array
+        arr2_list = arr2_list[sort_idx]
+    return arr1, arr2_list
 
 # Create a combined list of points
 def gather_points(list_of_lists):
@@ -1096,9 +1639,29 @@ def onclick(event):
 ##############################################################################################################
 
 # https://stackoverflow.com/questions/3207219/how-do-i-list-all-files-of-a-directory
-def get_folder_files(path):
+def get_folder_files(path, identificator = None):
+    # Get files, not directories
     onlyfiles = [f for f in os.listdir(path) if os.path.isfile(os.path.join(path, f))]
-    return onlyfiles
+    
+    # Extract files with the identificator
+    if identificator is None:
+        return onlyfiles
+    else:
+        '''
+        # Get output file identificator
+        name = input_files[0] # identificator_0025.tif
+        pattern = r'^(.+?)_\d+?\.tif$' # (any characters), _, digits, ., tif
+        identificator = re.search(pattern, name)
+        if identificator: # match found, extract value
+            identificator = identificator.group(1)
+        else: # no match
+            identificator = ''
+        '''
+        
+        pattern = '^' + use_sample + r'_\d+?\.tif$' # sample name, _, digits, ., tif
+        output_files = [f for f in onlyfiles if re.search(pattern, f) ]
+    
+    return output_files
 
 # Create output folder if it doesn't exist
 def create_folder(path):
@@ -1125,6 +1688,9 @@ def poly_func_value(x_value, coefs):
 # Return the distance between two xy points
 def xy_distance(point1x, point1y, point2x, point2y):
     return np.sqrt((point2x - point1x) ** 2 + (point2y - point1y) ** 2)
+
+def clip(value, min_v = -math.inf, max_v = math.inf):
+    return max(min_v, min(value, max_v))
 
 
 ############################################################
