@@ -1,5 +1,5 @@
 # Author: Jasper Ristkok
-# v1.2
+# v1.3
 
 # Code to convert an echellogram (photo) to spectrum
 
@@ -7,7 +7,7 @@
 # '14IWG1A_11a_P11_gate_1000ns_delay_1000ns' '492_2X8_R7C3C7_0001 2X08 - R7 C3-C7' 'Aryelle'
 # 'Plansee_W_3us_gate' 'Plansee_W_' 'IU667_D10_4us' 'IU667_D10' 'integrating_sphere_100ms_10avg_fiber600umB' 
 # 'DHLamp_' 'Hg_lamp' 'W_Lamp' 'Ne_lamp_100ms_fiber600umB'
-use_sample = 'IU667_D10'
+use_sample = r'492_2X8_R7C3C7_\d+? 2X08 - R7 C3-C7'
 integral_width = 10
 first_order_nr = 36
 
@@ -128,6 +128,8 @@ def load_photo(filepath):
 def output_averaged_photo(average_array, output_path, identificator, exif_data = {}):
     #for k, v in exif_data.items():
     #    print("Tag", k, "Value", v)  # Tag 274 Value 2
+    
+    identificator = identificator.replace(r'_\d+?', '') # strip _0001 in case it was specified
     
     image = PILImage.fromarray(average_array)
     image.save(averaged_path + 'average_' + identificator + '.tif')#, exif = exif_data) 
@@ -383,6 +385,7 @@ class calibration_window():
         self.program_mode = None
         self.selected_order = None
         self.best_order_idx = None
+        self.autoscale_spectrum = True
         
         self.order_plot_curves = []
         self.order_plot_points = []
@@ -439,17 +442,21 @@ class calibration_window():
         self.input_path_var = tkinter.StringVar()
         self.input_order_var = tkinter.StringVar()
         self.integral_width_var = tkinter.StringVar()
+        self.shift_orders_var = tkinter.StringVar()
         input_path_label = tkinter.Label(self.frame_input, text = 'Directory path:')
         input_path = tkinter.Entry(self.frame_input, textvariable = self.input_path_var)
         input_order_label = tkinter.Label(self.frame_input, text = 'First order nr:')
         input_order = tkinter.Entry(self.frame_input, textvariable = self.input_order_var)
         input_width_label = tkinter.Label(self.frame_input, text = 'Integral width:')
         input_width = tkinter.Entry(self.frame_input, textvariable = self.integral_width_var)
+        input_shift_label = tkinter.Label(self.frame_input, text = 'Shift orders up:')
+        input_shift_orders = tkinter.Entry(self.frame_input, textvariable = self.shift_orders_var)
         save_variables_btn = tkinter.Button(self.frame_input, text = "Save variables", command = self.save_variables)
         
         self.input_path_var.set(str(self.working_path))
         self.input_order_var.set(str(self.first_order_nr))
         self.integral_width_var.set(str(self.integral_width))
+        self.shift_orders_var.set(0)
         
         input_path_label.grid(row = 0, column = 0)
         input_path.grid(row = 0, column = 1)
@@ -457,7 +464,9 @@ class calibration_window():
         input_order.grid(row = 1, column = 1)
         input_width_label.grid(row = 2, column = 0)
         input_width.grid(row = 2, column = 1)
-        save_variables_btn.grid(row = 3, column = 0)
+        input_shift_label.grid(row = 3, column = 0)
+        input_shift_orders.grid(row = 3, column = 1)
+        save_variables_btn.grid(row = 4, column = 0)
         
         
         # Labels
@@ -483,6 +492,9 @@ class calibration_window():
         #self.add_point_right = tkinter.Button(self.frame_buttons, text = "Add point to right vertical", command = self.add_calibr_point_right)
         #self.add_point_order = tkinter.Button(self.frame_buttons, text = "Add point to order", command = self.add_calibr_point_order)
         self.spectrum_log_btn = tkinter.Button(self.frame_buttons, text = "Toggle spectrum log scale", command = self.spectrum_toggle_log)
+        update_scale_btn = tkinter.Button(self.frame_buttons, text = "Toggle autoupdate spectrum scale", command = self.update_scale_fn)
+        
+        
         self.image_int_down_btn = tkinter.Button(self.frame_buttons, text = "Lower colorbar max x2", command = self.image_int_down)
         self.image_int_up_btn = tkinter.Button(self.frame_buttons, text = "Raise colorbar max x5", command = self.image_int_up)
         self.image_int_min_down_btn = tkinter.Button(self.frame_buttons, text = "Lower colorbar min x2", command = self.image_int_min_down)
@@ -500,6 +512,7 @@ class calibration_window():
         self.add_order_btn.pack()
         self.spectrum_log_btn.pack()
         self.toggle_show_orders_btn.pack()
+        update_scale_btn.pack()
         
         self.image_int_down_btn.pack()
         self.image_int_up_btn.pack()
@@ -534,6 +547,7 @@ class calibration_window():
         self.working_path = self.input_path_var.get()
         self.first_order_nr = int(self.input_order_var.get())
         self.integral_width = float(self.integral_width_var.get())
+        shift_orders_amount = float(self.shift_orders_var.get())
         
         global input_photos_path, input_data_path, averaged_path, output_path, spectrum_path
         input_photos_path = self.working_path + 'Input_photos\\'
@@ -542,10 +556,13 @@ class calibration_window():
         output_path = self.working_path + 'Output\\'
         spectrum_path = self.working_path + 'Spectra\\'
         
+        self.shift_orders(shift_orders_amount)
+        
         # Empty the variables
         #self.input_path_var.set('')
         #self.input_order_var.set('')
         #self.integral_width_var.set('')
+        self.shift_orders_var.set(0)
         
         self.update_all()
         
@@ -715,8 +732,6 @@ class calibration_window():
         #self.update_order_curves()
         self.update_spectrum(autoscale = True)
         
-        #xdata = self.spectrum_curve.get_xdata()
-        #self.spectrum_ax.set_xlim(min(xdata), max(xdata))
         
         # Draw plot again and wait for drawing to finish
         self.canvas_spectrum.draw()
@@ -749,6 +764,11 @@ class calibration_window():
             self.hide_unhide_orders()
         
         self.set_feedback('Spectrum updating: ' + str(self.autoupdate_spectrum))
+    
+    def update_scale_fn(self):
+        self.autoscale_spectrum = not self.autoscale_spectrum
+        self.set_feedback('Spectrum autoscale: ' + str(self.autoscale_spectrum))
+    
     
     def toggle_show_orders(self):
         self.show_orders = not self.show_orders
@@ -913,6 +933,19 @@ class calibration_window():
         self.update_spectrum()
     
     
+    def shift_orders(self, shift_amount = 0):
+        if shift_amount == 0:
+            return
+        
+        for idx in range(len(self.calib_data['orders'])):
+            order = self.calib_data['orders'][idx]
+            
+            for point in order.points:
+                point.y -= shift_amount # shift up, so coordinate decreases
+        
+        
+        self.set_feedback('Orders shifted up by ' + str(shift_amount) + ' px')
+        
     
     #######################################################################################
     # Initialize Matplotlib plot
@@ -959,7 +992,7 @@ class calibration_window():
         # Show image and colorbar
         self.image = plt.imshow(self.photo_array, norm = 'log', aspect = 'auto') # symlog scale min can't be modified
         self.cbar = plt.colorbar()
-        #self.photo_fig.tight_layout()
+        self.photo_fig.tight_layout()
         
         self.canvas.mpl_connect('button_press_event', self.plot_click_callback)
         #matplotlib.backend_bases.MouseEvent
@@ -1174,7 +1207,7 @@ class calibration_window():
          self.spectrum_curve.set_ydata(z_values)
          
          # rescale to fit
-         if autoscale:
+         if self.autoscale_spectrum and autoscale:
              self.spectrum_ax.set_xlim(min(x_values), max(x_values))
              self.spectrum_ax.set_ylim(min(z_values), max(z_values))
          
@@ -1398,7 +1431,8 @@ class calibration_window():
 
 # Sum pixels around the order
 # If the width is even number then take asymmetrically one pixel from lower index
-def integrate_order_width(photo_array, x_pixel, y_pixel, width = 1):
+# if use_weights is True then the integral is summed with Gaussian weights (max is in center) with FWHM of width
+def integrate_order_width(photo_array, x_pixel, y_pixel, width = 1, use_weights = True):
     width = round(width)
     
     if width == 1:
@@ -1411,7 +1445,13 @@ def integrate_order_width(photo_array, x_pixel, y_pixel, width = 1):
     for y_idx in range(y_pixel - idx_lower, y_pixel + idx_higher):
         y_idx = clip(y_idx, 0, photo_array.shape[0] - 1)
         
-        integral += photo_array[y_idx, x_pixel] # x and y have to be switched (somewhy)
+        gaussian_weight = 1
+        if use_weights:
+            a = 1 # normalized
+            c = width / 2.35482 # width is FWHM
+            gaussian_weight = a * math.exp(-(y_pixel - y_idx) ** 2 / 2 / c ** 2)
+        
+        integral += photo_array[y_idx, x_pixel] * gaussian_weight # x and y have to be switched (somewhy)
     
     return integral
 
@@ -1658,7 +1698,14 @@ def get_folder_files(path, identificator = None):
             identificator = ''
         '''
         
-        pattern = '^' + use_sample + r'_\d+?\.tif$' # sample name, _, digits, ., tif
+        
+        pattern = '^' + use_sample 
+        if not r'_\d+?' in pattern: # add _0001.tif to the end of pattern unless already specified
+            pattern += r'_\d+?' # sample name, _, digits, ., tif
+        if not r'\.tif$' in pattern:
+            pattern += '\.tif$'
+        
+        
         output_files = [f for f in onlyfiles if re.search(pattern, f) ]
     
     return output_files
