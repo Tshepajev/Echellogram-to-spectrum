@@ -1,52 +1,53 @@
 # Author: Jasper Ristkok
-# v1.3
+# v1.4
 
 # Code to convert an echellogram (photo) to spectrum
-
-
-# '14IWG1A_11a_P11_gate_1000ns_delay_1000ns' '492_2X8_R7C3C7_0001 2X08 - R7 C3-C7' 'Aryelle'
-# 'Plansee_W_3us_gate' 'Plansee_W_' 'IU667_D10_4us' 'IU667_D10' 'integrating_sphere_100ms_10avg_fiber600umB' 
-# 'DHLamp_' 'Hg_lamp' 'W_Lamp' 'Ne_lamp_100ms_fiber600umB'
-use_sample = r'492_2X8_R7C3C7_\d+? 2X08 - R7 C3-C7'
-integral_width = 10
-first_order_nr = 36
-
-##############################################################################################################
-# IMPORTS
-##############################################################################################################
-from matplotlib import pyplot as plt
-import matplotlib.colors as mcolors
-#import scipy.stats
-import math
-#import scipy.optimize
-import numpy as np
-import os
-#import random
-
-import json
-
-import re # regex
-
-from PIL import Image as PILImage
-
-from scipy.interpolate import interp2d
-from matplotlib.widgets import Cursor
-
-import tkinter # Tkinter
-
-from  matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
 
 ##############################################################################################################
 # CONSTANTS
 ##############################################################################################################
 
-working_path = 'D:\\Research_analysis\\Projects\\2024_JET\\Lab_comparison_test\\Photo_to_spectrum\\Photos_spectra_comparison\\'
+
+# '14IWG1A_11a_P11_gate_1000ns_delay_1000ns' r'492_2X8_R7C3C7_\d+? 2X08 - R7 C3-C7' '492_2X8_R7C3C7_0001 2X08 - R7 C3-C7' 'Aryelle'
+# 'Plansee_W_3us_gate' 'Plansee_W_' 'IU667_D10_4us' 'IU667_D10' 'integrating_sphere_100ms_10avg_fiber600umB' 
+# 'DHLamp_' 'Hg_lamp' 'W_Lamp' 'Ne_lamp_100ms_fiber600umB'
+use_sample = 'IU667_D10'
+integral_width = 10
+first_order_nr = 36
+
+#working_path = 'D:\\Research_analysis\\Projects\\2024_JET\\Lab_comparison_test\\Photo_to_spectrum\\Photos_spectra_comparison\\'
+working_path = 'E:\\Nextcloud sync\\Data_processing\\Projects\\2024_09_JET\\Lab_comparison_test\\Photo_to_spectrum\\Photos_spectra_comparison\\'
+
 input_photos_path = working_path + 'Input_photos\\'
 input_data_path = working_path + 'Input_data\\'
 averaged_path = working_path + 'Averaged\\'
 output_path = working_path + 'Output\\'
 spectrum_path = working_path + 'Spectra\\'
+
+
+##############################################################################################################
+# IMPORTS
+##############################################################################################################
+
+import numpy as np
+import math
+import os
+import re # regex
+import json
+import tkinter # Tkinter
+
+from PIL import Image as PILImage
+from matplotlib import pyplot as plt
+import matplotlib.colors as mcolors
+from  matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+
+#import random
+#import scipy.stats
+#import scipy.optimize
+#from scipy.interpolate import interp2d
+#from matplotlib.widgets import Cursor
+
 
 ##############################################################################################################
 # DEFINITIONS
@@ -54,27 +55,40 @@ spectrum_path = working_path + 'Spectra\\'
 ##############################################################################################################
 
 def main_program():
+    
     # create folders if missing
-    create_folder(output_path)
-    create_folder(averaged_path)
+    create_folder_structure()
     
-    # average input photos and return the array
-    average_array, identificator = prepare_photos()
+    # Create and draw GUI window
+    tkinter_master = tkinter.Tk()
+    try:
+        window = calibration_window(tkinter_master)
+        tkinter_master.mainloop() # run tkinter (only once)
+    finally:
+        # When code crashes or debugging is stopped then the tkinter object isn't destroyed in Spyder
+        # This isn't probably an issue in the final program version.
+        try: # another try in case user closed the window manually and tkinter_master doesn't exist
+            tkinter_master.destroy()
+        except:
+            pass
     
-    # assumes square image
-    if (identificator == use_sample):
-        process_photo(average_array, identificator)
-    
-    return
 
 ##############################################################################################################
 # Preparation phase
 ##############################################################################################################
 
-def prepare_photos():
+def create_folder_structure():
+    create_folder(output_path)
+    create_folder(averaged_path)
+    create_folder(input_photos_path)
+    create_folder(input_data_path)
+    create_folder(spectrum_path)
+    
+        
+
+def prepare_photos(use_sample = ''):
     # Get files
-    input_files = get_folder_files(input_photos_path, identificator = use_sample)
-    averaged_files = get_folder_files(averaged_path)
+    averaged_files = get_folder_files(averaged_path, use_sample = use_sample)
     
     exif_data = None
     
@@ -84,6 +98,7 @@ def prepare_photos():
     
     # Average all photos in input folder and save averaged photo into averaged folder
     else:
+        input_files = get_folder_files(input_photos_path, use_sample = use_sample, identificator = use_sample)
         average_array, exif_data = average_photos(input_files)
         output_averaged_photo(average_array, output_path, use_sample, exif_data)
     
@@ -92,6 +107,16 @@ def prepare_photos():
     
     return average_array, use_sample
 
+
+def load_photo(filepath):
+    image = PILImage.open(filepath)
+    #im.show()
+    #exif_data = image.info['exif'] # save exif data, so image can be opened with Sophi nXt
+    exif_data = image.getexif() # save exif data, so image can be opened with Sophi nXt
+    # TODO: get exif data (especially description (or comment) part) and save with new image
+    
+    imArray = np.array(image)
+    return imArray, exif_data
 
 
 def average_photos(input_files):
@@ -114,16 +139,6 @@ def average_photos(input_files):
     average = sum / count
     return average, exif_data
 
-def load_photo(filepath):
-    image = PILImage.open(filepath)
-    #im.show()
-    #exif_data = image.info['exif'] # save exif data, so image can be opened with Sophi nXt
-    exif_data = image.getexif() # save exif data, so image can be opened with Sophi nXt
-    # TODO: get exif data (especially description (or comment) part) and save with new image
-    
-    imArray = np.array(image)
-    return imArray, exif_data
-
 
 def output_averaged_photo(average_array, output_path, identificator, exif_data = {}):
     #for k, v in exif_data.items():
@@ -135,7 +150,7 @@ def output_averaged_photo(average_array, output_path, identificator, exif_data =
     image.save(averaged_path + 'average_' + identificator + '.tif')#, exif = exif_data) 
     
 def spectra_to_photos():
-    files = get_folder_files(spectrum_path)
+    files = get_folder_files(spectrum_path, use_sample = use_sample)
     
     for file in files:
         if file.endswith(".dat") or file.endswith(".csv"):
@@ -147,12 +162,13 @@ def spectra_to_photos():
             image = PILImage.fromarray(spectrum)
             #image.show()
             image.save(spectrum_path + file + '.tif') # TODO: strip file extension first
-            
 
+
+'''
 def load_spectrum(filepath):
     array = np.fromfile(filepath, dtype=float, sep=' ', like = np.empty((39303, 2)))
     return
-
+'''
 
 
 ##############################################################################################################
@@ -170,27 +186,16 @@ def process_photo(photo_array, identificator):
     
     #calibration_window(photo_array)
     
-    tkinter_master = tkinter.Tk()
-    try:
-        window = calibration_window(tkinter_master, photo_array, calibration_dict = calibr_data, order_bounds = vertical_calibration_array)
-        tkinter_master.mainloop() # run tkinter (only once)
-    finally:
-        # When code crashes or debugging is stopped then the tkinter object isn't destroyed in Spyder
-        # This isn't probably an issue in the final program version.
-        try: # another try in case user closed the window manually and tkinter_master doesn't exist
-            tkinter_master.destroy()
-        except:
-            pass
     
     np.savetxt( output_path + 'image_array.csv', photo_array, delimiter = ',')
     #draw_pyplot(photo_array, identificator)
     
-    return
+    return photo_array, calibr_data, vertical_calibration_array
 
 def load_calibration_data():
     calibration_data = None
     
-    output_files = get_folder_files(output_path)
+    output_files = get_folder_files(output_path, use_sample = use_sample)
     
     if 'calibration_data.json' in output_files: # calibration done previously
         with open(output_path + 'calibration_data.json', 'r') as file:
@@ -199,7 +204,7 @@ def load_calibration_data():
             except: # e.g. file is empty
                 pass
     
-    input_data_files = get_folder_files(input_data_path)
+    input_data_files = get_folder_files(input_data_path, use_sample = use_sample)
     if 'Vertical_points.csv' in input_data_files:
         vertical_calibration_array = np.loadtxt(input_data_path + 'Vertical_points.csv', delimiter = ',', skiprows = 1)
         
@@ -347,21 +352,24 @@ class order_points(calibration_data):
 class calibration_window():
     
     # Main code
-    def __init__(self, parent, photo_array, calibration_dict = None, order_bounds = None):
+    def __init__(self, parent): #, photo_array, calibration_dict = None, order_bounds = None):
         
         # Initialize argument variables
         self.root = parent
-        self.photo_array = photo_array
-        self.order_bounds = order_bounds
+        #self.photo_array = photo_array
+        #self.order_bounds = order_bounds
         
         # Initialize class variables
         self.init_class_variables()
         
-        # Load input data
-        self.load_data(calibration_dict)
-        
         # Draw main window and tkinter elements
         self.initialize_window_elements()
+        
+        self.load_sample_data()
+        
+        
+        # Load input data
+        #self.load_data(calibration_dict)
         
         # Draw matplotlib plot
         self.initialize_plot()
@@ -375,6 +383,7 @@ class calibration_window():
     #######################################################################################
     
     def init_class_variables(self):
+        self.use_sample = use_sample
         self.working_path = working_path
         self.first_order_nr = first_order_nr
         self.integral_width = integral_width
@@ -387,35 +396,16 @@ class calibration_window():
         self.best_order_idx = None
         self.autoscale_spectrum = True
         
+        self.photo_array = []
+        self.order_bounds = []
         self.order_plot_curves = []
         self.order_plot_points = []
         self.order_poly_coefs = []
         self.order_bound_points = []
         
         # dictionary to store three calibration things (start and end vertical, nr of horizontal)
-        self.calib_data = {}
+        self.calib_data = None
     
-    def load_data(self, calibration_dict):
-        
-        # initialize calib_data with photo_array bounds for better plotting
-        if calibration_dict is None:
-            self.calib_data['start'] = start_points(image_width = self.photo_array.shape[0])
-            self.calib_data['end'] = end_points(image_width = self.photo_array.shape[0])
-            self.calib_data['orders'] = [order_points(image_width = self.photo_array.shape[0])]
-            
-            
-        else: # load saved data
-            self.calib_data['start'] = start_points(existing_data = calibration_dict['start'])
-            self.calib_data['end'] = end_points(existing_data = calibration_dict['end'])
-            
-            # Iterate over orders
-            self.calib_data['orders'] = []
-            for order_raw in calibration_dict['orders']:
-                self.calib_data['orders'].append(order_points(existing_data = order_raw))
-                
-                
-            # sort orders by average y values
-            self.sort_orders(sort_plots = False)
     
     #######################################################################################
     # Tkinter window elements
@@ -439,10 +429,13 @@ class calibration_window():
         self.frame_buttons = tkinter.Frame(self.frame_buttons_input)
         
         # Inputs
+        self.use_sample_var = tkinter.StringVar()
         self.input_path_var = tkinter.StringVar()
         self.input_order_var = tkinter.StringVar()
         self.integral_width_var = tkinter.StringVar()
         self.shift_orders_var = tkinter.StringVar()
+        input_sample_label = tkinter.Label(self.frame_input, text = 'Use sample:')
+        input_sample = tkinter.Entry(self.frame_input, textvariable = self.use_sample_var)
         input_path_label = tkinter.Label(self.frame_input, text = 'Directory path:')
         input_path = tkinter.Entry(self.frame_input, textvariable = self.input_path_var)
         input_order_label = tkinter.Label(self.frame_input, text = 'First order nr:')
@@ -453,20 +446,24 @@ class calibration_window():
         input_shift_orders = tkinter.Entry(self.frame_input, textvariable = self.shift_orders_var)
         save_variables_btn = tkinter.Button(self.frame_input, text = "Save variables", command = self.save_variables)
         
+        self.use_sample_var.set(self.use_sample)
         self.input_path_var.set(str(self.working_path))
         self.input_order_var.set(str(self.first_order_nr))
         self.integral_width_var.set(str(self.integral_width))
         self.shift_orders_var.set(0)
         
-        input_path_label.grid(row = 0, column = 0)
-        input_path.grid(row = 0, column = 1)
-        input_order_label.grid(row = 1, column = 0)
-        input_order.grid(row = 1, column = 1)
-        input_width_label.grid(row = 2, column = 0)
-        input_width.grid(row = 2, column = 1)
-        input_shift_label.grid(row = 3, column = 0)
-        input_shift_orders.grid(row = 3, column = 1)
-        save_variables_btn.grid(row = 4, column = 0)
+        
+        input_sample_label.grid(row = 0, column = 0)
+        input_sample.grid(row = 0, column = 1)
+        input_path_label.grid(row = 1, column = 0)
+        input_path.grid(row = 1, column = 1)
+        input_order_label.grid(row = 2, column = 0)
+        input_order.grid(row = 2, column = 1)
+        input_width_label.grid(row = 3, column = 0)
+        input_width.grid(row = 3, column = 1)
+        input_shift_label.grid(row = 4, column = 0)
+        input_shift_orders.grid(row = 4, column = 1)
+        save_variables_btn.grid(row = 5, column = 0)
         
         
         # Labels
@@ -526,6 +523,7 @@ class calibration_window():
         #self.root.geometry("300x300+50+50")
         
         #self.root.update()
+        #self.pack_window_elements()
         
     # Draw window elements
     def pack_window_elements(self):
@@ -537,13 +535,60 @@ class calibration_window():
         self.frame_buttons.pack(side = 'top')
         
         
+    #######################################################################################
+    # Load sample data
+    #######################################################################################
+    
+    def load_sample_data(self):
         
+        # average input photos and return the array
+        average_array, identificator = prepare_photos(self.use_sample)
+        
+        # assumes square image
+        if (identificator != self.use_sample):
+            print('Sample not found in input files')
+            self.set_feedback('Sample not found in input files', 10000)
+            
+        photo_array, calibration_data, vertical_calibration_array = process_photo(average_array, identificator)
+        
+        self.photo_array = photo_array
+        self.order_bounds = vertical_calibration_array
+        
+        # Load input data
+        if self.calib_data is None: # only initialize diffr orders once after program start
+            self.calib_data = {}
+            self.load_data(calibration_data)
+        
+    
+    def load_data(self, calibration_dict):
+        
+        # initialize calib_data with photo_array bounds for better plotting
+        if calibration_dict is None:
+            self.calib_data['start'] = start_points(image_width = self.photo_array.shape[0])
+            self.calib_data['end'] = end_points(image_width = self.photo_array.shape[0])
+            self.calib_data['orders'] = [order_points(image_width = self.photo_array.shape[0])]
+            
+            
+        else: # load saved data
+            self.calib_data['start'] = start_points(existing_data = calibration_dict['start'])
+            self.calib_data['end'] = end_points(existing_data = calibration_dict['end'])
+            
+            # Iterate over orders
+            self.calib_data['orders'] = []
+            for order_raw in calibration_dict['orders']:
+                self.calib_data['orders'].append(order_points(existing_data = order_raw))
+                
+                
+            # sort orders by average y values
+            self.sort_orders(sort_plots = False)
+    
     
     #######################################################################################
     # Button functions
     #######################################################################################
     
     def save_variables(self):
+        new_sample = self.use_sample_var.get()
         self.working_path = self.input_path_var.get()
         self.first_order_nr = int(self.input_order_var.get())
         self.integral_width = float(self.integral_width_var.get())
@@ -556,6 +601,8 @@ class calibration_window():
         output_path = self.working_path + 'Output\\'
         spectrum_path = self.working_path + 'Spectra\\'
         
+        
+        
         self.shift_orders(shift_orders_amount)
         
         # Empty the variables
@@ -563,6 +610,17 @@ class calibration_window():
         #self.input_order_var.set('')
         #self.integral_width_var.set('')
         self.shift_orders_var.set(0)
+        
+        # Use new sample, load data again and draw plots again
+        if new_sample != self.use_sample:
+            
+            # Load new sample data
+            self.use_sample = new_sample
+            self.load_sample_data()
+            
+            # Draw plots again
+            self.initialize_plot(reset = True)
+            
         
         self.update_all()
         
@@ -951,7 +1009,10 @@ class calibration_window():
     # Initialize Matplotlib plot
     #######################################################################################
     
-    def initialize_plot(self):
+    def initialize_plot(self, reset = False):
+        
+        if reset:
+            self.clear_plots()
         
         # Draw main image
         self.draw_plot(identificator = '')
@@ -974,14 +1035,35 @@ class calibration_window():
         self.canvas_spectrum.draw()
         self.canvas_spectrum.flush_events() 
     
+    
+    def clear_plots(self):
+        # Clear plot
+        #self.photo_fig.clf()
+        self.canvas._tkcanvas.destroy()
+        self.plot_toolbar.destroy()
+        
+        # Clear spectrum
+        self.canvas_spectrum._tkcanvas.destroy()
+        self.spectrum_toolbar.destroy()
+        #self.canvas_spectrum
+        #self.spectrum_fig
+        #self.spectrum_ax
+        #self.spectrum_curve
+        
+        # Clear saved line objects
+        self.order_plot_curves = []
+        self.order_plot_points = []
+        self.order_poly_coefs = []
+        self.order_bound_points = []
+    
     # Draw main heatmap
     def draw_plot(self, identificator = ''):
         self.photo_fig = plt.figure()
         
         # Attach figure to the Tkinter frame
         self.canvas = FigureCanvasTkAgg(self.photo_fig, self.frame_image)
-        toolbar = NavigationToolbar2Tk(self.canvas, self.frame_image)
-        toolbar.update()
+        self.plot_toolbar = NavigationToolbar2Tk(self.canvas, self.frame_image)
+        self.plot_toolbar.update()
         self.canvas._tkcanvas.pack(fill='both', expand=1, side = 'top')
         
         # x-axis to the top of the image
@@ -1063,8 +1145,8 @@ class calibration_window():
         
         # Attach figure to the Tkinter frame
         self.canvas_spectrum = FigureCanvasTkAgg(self.spectrum_fig, self.frame_spectrum)
-        toolbar = NavigationToolbar2Tk(self.canvas_spectrum, self.frame_spectrum)
-        toolbar.update()
+        self.spectrum_toolbar = NavigationToolbar2Tk(self.canvas_spectrum, self.frame_spectrum)
+        self.spectrum_toolbar.update()
         self.canvas_spectrum._tkcanvas.pack(fill='both', expand=1, side = 'top')
         
         self.spectrum_ax = self.spectrum_fig.gca()
@@ -1229,7 +1311,7 @@ class calibration_window():
         
         # Iterate over diffraction orders
         for idx in range(len(self.calib_data['orders'])):
-            order = self.calib_data['orders'][idx]
+            #order = self.calib_data['orders'][idx]
             
             self.order_plot_curves[idx].set_visible(self.show_orders)
             self.order_plot_points[idx].set_visible(self.show_orders)
@@ -1305,8 +1387,6 @@ class calibration_window():
             if order.order_nr == order_nr:
                 return idx
         return None
-    
-   
     
     
     
@@ -1679,7 +1759,7 @@ def onclick(event):
 ##############################################################################################################
 
 # https://stackoverflow.com/questions/3207219/how-do-i-list-all-files-of-a-directory
-def get_folder_files(path, identificator = None):
+def get_folder_files(path, use_sample = '', identificator = None):
     # Get files, not directories
     onlyfiles = [f for f in os.listdir(path) if os.path.isfile(os.path.join(path, f))]
     
