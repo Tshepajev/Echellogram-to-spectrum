@@ -1,5 +1,5 @@
 # Author: Jasper Ristkok
-# v1.4
+# v1.5
 
 # Code to convert an echellogram (photo) to spectrum
 
@@ -204,6 +204,7 @@ def load_calibration_data():
             except: # e.g. file is empty
                 pass
     
+    vertical_calibration_array = None
     input_data_files = get_folder_files(input_data_path, use_sample = use_sample)
     if 'Vertical_points.csv' in input_data_files:
         vertical_calibration_array = np.loadtxt(input_data_path + 'Vertical_points.csv', delimiter = ',', skiprows = 1)
@@ -327,7 +328,8 @@ class order_points(calibration_data):
     def __init__(self, image_width = None, existing_data = None):
         super().__init__(image_width)
         self.order_nr = -1
-        self.bounds = (None, None)
+        self.bounds_px = (None, None) # pixel index
+        self.bounds_wave = (None, None) # wavelengths
         
         if existing_data is None:
             '''
@@ -395,6 +397,7 @@ class calibration_window():
         self.selected_order = None
         self.best_order_idx = None
         self.autoscale_spectrum = True
+        
         
         self.photo_array = []
         self.order_bounds = []
@@ -481,7 +484,8 @@ class calibration_window():
         self.orders_tidy_btn = tkinter.Button(self.frame_buttons, text = "Tidy order points", command = self.orders_tidy)
         
         
-        self.add_order_btn = tkinter.Button(self.frame_buttons, text = "Add diffr order", command = self.add_order)
+        add_order_btn = tkinter.Button(self.frame_buttons, text = "Add diffr order", command = self.add_order)
+        delete_order_btn = tkinter.Button(self.frame_buttons, text = "Delete diffr order", command = self.delete_order)
         
         self.toggle_spectrum_update_btn = tkinter.Button(self.frame_buttons, text = "Toggle spectrum updating", command = self.toggle_spectrum_update)
         self.toggle_show_orders_btn = tkinter.Button(self.frame_buttons, text = "Toggle showing orders", command = self.toggle_show_orders)
@@ -497,6 +501,8 @@ class calibration_window():
         self.image_int_min_down_btn = tkinter.Button(self.frame_buttons, text = "Lower colorbar min x2", command = self.image_int_min_down)
         self.image_int_min_up_btn = tkinter.Button(self.frame_buttons, text = "Raise colorbar min x5", command = self.image_int_min_up)
         
+        
+        
         # Show buttons
         self.load_order_points_btn.pack()
         self.button_save_coefs_btn.pack()
@@ -506,7 +512,9 @@ class calibration_window():
         self.vertical_mode_btn.pack()
         self.orders_mode_btn.pack()
         self.orders_tidy_btn.pack()
-        self.add_order_btn.pack()
+        add_order_btn.pack()
+        delete_order_btn.pack()
+        
         self.spectrum_log_btn.pack()
         self.toggle_show_orders_btn.pack()
         update_scale_btn.pack()
@@ -796,6 +804,36 @@ class calibration_window():
         self.canvas_spectrum.flush_events()
         
         self.set_feedback('Order added and selected', 1000)
+    
+    def delete_order(self):
+        
+        if self.best_order_idx is None:
+            self.set_feedback('No order selected, use diff edit mode first', 8000)
+            return
+        
+        # Show orders
+        self.show_orders = True
+        self.hide_unhide_orders()
+        
+        selected_idx = self.best_order_idx
+        selected_order = self.calib_data['orders'][selected_idx]
+        order_nr = selected_order.order_nr
+        
+        del self.calib_data['orders'][selected_idx]
+        
+        # Deselect the order
+        self.selected_order = None
+        self.best_order_idx = None
+        
+        # Draw plots again
+        self.initialize_plot(reset = True)
+        self.update_all()
+        
+        #self.update_spectrum(autoscale = True)
+        
+        self.reset_mode()
+        
+        self.set_feedback('Order deleted: ' + order_nr, 5000)
     
     def spectrum_toggle_log(self):
         current_scale = self.spectrum_ax.get_yscale()
@@ -1333,16 +1371,16 @@ class calibration_window():
     
     def calculate_bounds(self, order_idx, initialize_x = False, use_verticals = False):
         order = self.calib_data['orders'][order_idx]
-        (x_start, x_end) = order.bounds
+        (px_start, px_end) = order.bounds_px
         
-        if initialize_x or use_verticals or (x_start is None) or (x_end is None):
-            x_start, x_end = self.initialize_bounds(order_idx, use_verticals = use_verticals)
+        if initialize_x or use_verticals or (px_start is None) or (px_end is None):
+            px_start, px_end = self.initialize_bounds(order_idx, use_verticals = use_verticals)
         
         coefs = np.polynomial.polynomial.polyfit(order.xlist, order.ylist, 2)
-        y_start = poly_func_value(x_start, coefs)
-        y_end = poly_func_value(x_end, coefs)
+        y_start = poly_func_value(px_start, coefs)
+        y_end = poly_func_value(px_end, coefs)
         
-        return x_start, x_end, y_start, y_end
+        return px_start, px_end, y_start, y_end
     
     # Calculate bounds by the crossing of curves and save into order points class
     def initialize_bounds(self, order_idx, use_verticals = False):
@@ -1359,10 +1397,11 @@ class calibration_window():
         if use_verticals or (self.order_bounds is None):
             left_curve = self.start_curve.get_xdata()
             right_curve = self.end_curve.get_xdata()
-            x_start, x_end = get_order_bounds(nr_pixels, curve_x, curve_y, left_curve, right_curve)
+            px_start, px_end = get_order_bounds(nr_pixels, curve_x, curve_y, left_curve, right_curve)
         
         # By default calculate by input data
         else:
+            
             # get order_nr row index from data
             order_nr = self.calib_data['orders'][order_idx].order_nr
             row_idxs = np.where(self.order_bounds[:,0] == order_nr)[0] # get indices of rows where order nr is the same
@@ -1370,15 +1409,23 @@ class calibration_window():
             # Get bounds
             if len(row_idxs) > 0: # There's match
                 row_idx = row_idxs[0]
-                x_start = self.order_bounds[row_idx, 1]
-                x_end = self.order_bounds[row_idx, 2]
+                px_start = self.order_bounds[row_idx, 1]
+                px_end = self.order_bounds[row_idx, 2]
+                
+                # File contains info about wavelengths
+                if self.order_bounds.shape[1] > 3:
+                    wave_start = self.order_bounds[row_idx, 3]
+                    wave_end = self.order_bounds[row_idx, 4]
+                    self.calib_data['orders'][order_idx].bounds_wave = (wave_start, wave_end)
+                
             else: # no match, use photo bounds
-                x_start = 0
-                x_end = nr_pixels
+                px_start = 0
+                px_end = nr_pixels
         
-        self.calib_data['orders'][order_idx].bounds = (x_start, x_end)
+        self.calib_data['orders'][order_idx].bounds_px = (px_start, px_end)
         
-        return x_start, x_end
+        
+        return px_start, px_end
     
         
     def get_idx_by_order_nr(self, order_nr):
@@ -1443,12 +1490,13 @@ class calibration_window():
         
         # Compile z-data from the photo with all diffraction orders
         # Iterate over orders backwards because they are sorted by order nr (top to bottom)
-        for idx in range(len(self.calib_data['orders']) - 1, -1, -1):
-            #order = self.calib_data['orders'][idx]
+        for order_idx in range(len(self.calib_data['orders']) - 1, -1, -1):
+            #order = self.calib_data['orders'][order_idx]
             
             #curve_x = photo_pixels
-            curve_x = self.order_plot_curves[idx].get_xdata()
-            curve_y = self.order_plot_curves[idx].get_ydata()
+            curve_x = self.order_plot_curves[order_idx].get_xdata()
+            curve_y = self.order_plot_curves[order_idx].get_ydata()
+            curve_y = np.round(curve_y)
             
             # sort the arrays in increasing x value
             #curve_x, curve_y = sort_related_arrays(curve_x, curve_y)
@@ -1464,36 +1512,71 @@ class calibration_window():
             
             # Get bounds for this diffraction order
             #x_left, x_right = get_order_bounds(nr_pixels, curve_x, curve_y, left_curve, right_curve)
-            #x_left = get_polynomial_intersection(self.order_poly_coefs[idx], self.left_poly_coefs, nr_pixels, is_left = True)
-            #x_right = get_polynomial_intersection(self.order_poly_coefs[idx], self.right_poly_coefs, nr_pixels, is_left = False)
+            #x_left = get_polynomial_intersection(self.order_poly_coefs[order_idx], self.left_poly_coefs, nr_pixels, is_left = True)
+            #x_right = get_polynomial_intersection(self.order_poly_coefs[order_idx], self.right_poly_coefs, nr_pixels, is_left = False)
             
             #print(x_left, x_right)
-            (x_left, x_right) = self.calib_data['orders'][idx].bounds
+            (x_left, x_right) = self.calib_data['orders'][order_idx].bounds_px
+            
+            # Default bounds as first px and last px
+            if x_left is None:
+                x_left = 0
+            if x_right is None:
+                x_right = nr_pixels - 1
             
             # get z-values corresponding to the interpolated pixels on the order curve
-            for idx2 in range(len(photo_pixels)): # TODO: add width integration
+            for idx2 in photo_pixels: # TODO: add width integration
                 
                 # Save px only if it's between left and right calibration curves
-                x_value = curve_x[idx2]
-                y_value = y_pixels[idx2]
+                x_px = curve_x[idx2]
                 
-                if x_right is None:
-                    pass
-                
+                # Do stuff if point is between bounds
                 #if self.point_in_range(x_value, curve_x, curve_y, x2, y2, x3, y3): # intersection function is way too slow
-                if x_left <= x_value <= x_right:
-                    if x_values is None:
-                        x_values = [0]
-                    else:
-                        x_values.append(x_values[-1] + 1) # increment by 1
+                if x_left <= x_px <= x_right:
+                    y_px = y_pixels[idx2]
                     
-                    integral = integrate_order_width(self.photo_array, x_value, y_value, width = self.integral_width)
+                    (wave_start, wave_end) = self.calib_data['orders'][order_idx].bounds_wave
+                    
+                    # No input with wavelengths, output x-axis as pixel values
+                    if wave_start is None:
+                        if x_values is None: # Initialize
+                            x_values = [0]
+                        else:
+                            x_values.append(x_values[-1] + 1) # increment by 1
+                        
+                        
+                    # Has input with wavelengths, output x-axis as wavelengths
+                    else:
+                        if x_values is None: # Initialize
+                            x_values = []
+                        
+                        x_value = self.get_wavelength(order_idx, x_px)
+                        x_values.append(x_value)
+                        
+                    
+                    # Get z value from Echellogram
+                    integral = integrate_order_width(self.photo_array, x_px, y_px, width = self.integral_width)
                     z_values.append(integral) # x and y have to be switched (somewhy)
                 
         return x_values, z_values
     
     
-    
+
+    def get_wavelength(self, order_idx, x_px):
+        
+        # Get bounds
+        (px_start, px_end) = self.calib_data['orders'][order_idx].bounds_px
+        (wave_start, wave_end) = self.calib_data['orders'][order_idx].bounds_wave
+        
+        # Do linear regression and find the wavelength of x_px
+        d_px = px_end - px_start
+        d_wave = wave_end - wave_start
+        slope = d_wave / d_px
+        intercept = wave_start - slope * px_start
+        
+        wavelength = x_px * slope + intercept
+        return wavelength
+
     
     def point_in_range(self, x_point, x1, y1, x2, y2, x3, y3):
         
@@ -1516,7 +1599,7 @@ def integrate_order_width(photo_array, x_pixel, y_pixel, width = 1, use_weights 
     width = round(width)
     
     if width == 1:
-        return photo_array[y_pixel, x_pixel]
+        return photo_array[y_pixel, x_pixel] # x and y have to be switched (somewhy)
     
     integral = 0
     x_pixel = clip(x_pixel, 0, photo_array.shape[0] - 1)
