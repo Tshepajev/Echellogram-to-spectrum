@@ -1,5 +1,5 @@
 # Author: Jasper Ristkok
-# v1.5
+# v1.6
 
 # Code to convert an echellogram (photo) to spectrum
 
@@ -13,7 +13,7 @@
 # 'Plansee_W_3us_gate' 'Plansee_W_' 'IU667_D10_4us' 'IU667_D10' 'integrating_sphere_100ms_10avg_fiber600umB' 
 # 'DHLamp_' 'Hg_lamp' 'W_Lamp' 'Ne_lamp_100ms_fiber600umB'
 use_sample = 'IU667_D10'
-integral_width = 10
+integral_width = 1
 first_order_nr = 36
 
 #working_path = 'D:\\Research_analysis\\Projects\\2024_JET\\Lab_comparison_test\\Photo_to_spectrum\\Photos_spectra_comparison\\'
@@ -252,6 +252,7 @@ class point_class():
 class calibration_data():
     
     def __init__(self, image_width):
+        self.avg_y = None
         self.image_width = image_width
     
     def update(self):
@@ -833,7 +834,7 @@ class calibration_window():
         
         self.reset_mode()
         
-        self.set_feedback('Order deleted: ' + order_nr, 5000)
+        self.set_feedback('Order deleted: ' + str(order_nr), 5000)
     
     def spectrum_toggle_log(self):
         current_scale = self.spectrum_ax.get_yscale()
@@ -1554,8 +1555,25 @@ class calibration_window():
                         x_values.append(x_value)
                         
                     
+                    # Get the width to integrate over (between two diffraction orders)
+                    width = self.integral_width
+                    center = self.calib_data['orders'][order_idx].avg_y
+                    if order_idx > 0: # check for out of bounds error
+                        low = self.calib_data['orders'][order_idx - 1].avg_y
+                        width = (center - low) / 2
+                    elif len(self.calib_data['orders']) > order_idx + 1: # check for out of bounds error
+                        high = self.calib_data['orders'][order_idx + 1].avg_y
+                        width = (high - center) / 2
+                    
+                    # very important, otherwise 2.49 and 2.51 will have 150% jump in integral because of rounding
+                    width = clip(width, min_v = 3) 
+                    
+                    if (order_idx == self.best_order_idx) and (idx2 == 500):
+                        print(center)
+                        print(width)
+                    
                     # Get z value from Echellogram
-                    integral = integrate_order_width(self.photo_array, x_px, y_px, width = self.integral_width)
+                    integral = integrate_order_width(self.photo_array, x_px, y_px, width = width)
                     z_values.append(integral) # x and y have to be switched (somewhy)
                 
         return x_values, z_values
@@ -1595,7 +1613,7 @@ class calibration_window():
 # Sum pixels around the order
 # If the width is even number then take asymmetrically one pixel from lower index
 # if use_weights is True then the integral is summed with Gaussian weights (max is in center) with FWHM of width
-def integrate_order_width(photo_array, x_pixel, y_pixel, width = 1, use_weights = True):
+def integrate_order_width(photo_array, x_pixel, y_pixel, width = 1, use_weights = False):
     width = round(width)
     
     if width == 1:
