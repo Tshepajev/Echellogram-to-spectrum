@@ -1,5 +1,5 @@
 # Author: Jasper Ristkok
-# v1.7
+# v1.7.1
 
 # Code to convert an echellogram (photo) to spectrum
 
@@ -24,10 +24,6 @@ series_filename = None
 # How many Echellograms to average starting from the first
 # None means all in the shot series are used 
 average_photos_nr = 20
-
-
-#integral_width = 1
-#first_order_nr = 36
 
 
 
@@ -71,12 +67,6 @@ import matplotlib.colors as mcolors
 from  matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
 import platform
-
-#import random
-#import scipy.stats
-#import scipy.optimize
-#from scipy.interpolate import interp2d
-#from matplotlib.widgets import Cursor
 
 ##############################################################################################################
 # Debugging functions
@@ -422,33 +412,7 @@ class calibration_data():
             self.points.append(point_class(point_dict['x'], y = point_dict['y'], group = group))
         
         self.update()
-        
-    
-class start_points(calibration_data):
-    def __init__(self, image_width = 1, existing_data = None):
-        super().__init__(image_width)
-        
-        if existing_data is None:
-            self.points = [point_class(0, 0, group = 'start'), 
-                        point_class(self.image_width / 4 - 1, self.image_width / 2 - 1, group = 'start'), 
-                        point_class(self.image_width / 3 - 1, self.image_width - 1, group = 'start')]
-        else:
-            self.load_encode(existing_data, 'start') 
-            
-        self.update()
-        
-class end_points(calibration_data):
-    def __init__(self, image_width = 1, existing_data = None):
-        super().__init__(image_width)
-        
-        if existing_data is None:
-            self.points = [point_class(self.image_width * 2 / 3 - 1, self.image_width - 1, group = 'end'), 
-                        point_class(self.image_width * 3 / 4 - 1, self.image_width / 2 - 1, group = 'end'), 
-                        point_class(self.image_width - 1, 0, group = 'end')]
-        else:
-            self.load_encode(existing_data, 'end')
-        
-        self.update()
+
 
 # Line of a diffraction order (horizontal)
 class order_points(calibration_data):
@@ -560,7 +524,6 @@ class calibration_window():
         self.first_order_nr = None #first_order_nr
         #self.integral_width = integral_width
         
-        self.show_verticals = False
         self.show_orders = True
         self.autoupdate_spectrum = True
         self.program_mode = None
@@ -581,7 +544,7 @@ class calibration_window():
         
         #self.order_data = {} # necessary because order classes get sorted and indices change
         
-        # dictionary to store three calibration things (start and end vertical, nr of horizontal)
+        # list to store diffraction order class instances
         self.calib_data = None
         
         self.spectrum_total_intensity = 0
@@ -596,11 +559,6 @@ class calibration_window():
         
         # Main window
         ######################################
-        
-        #self.root.winfo_width()
-        #self.root.winfo_height()
-        #self.root.winfo_screenwidth()
-        #self.root.winfo_screenheight()
         
         #op_sys_toolbar_height = 0.07 #75 px for 1080p
         #self.root.maxsize(self.root.winfo_screenwidth(), self.root.winfo_screenheight() - round(self.root.winfo_screenheight() * op_sys_toolbar_height))
@@ -632,8 +590,6 @@ class calibration_window():
         input_path = tkinter.Entry(self.frame_input, textvariable = self.input_path_var)
         input_order_label = tkinter.Label(self.frame_input, text = 'Overwrite first order nr:')
         input_order = tkinter.Entry(self.frame_input, textvariable = self.input_order_var)
-        #input_width_label = tkinter.Label(self.frame_input, text = 'Integral width:')
-        #input_width = tkinter.Entry(self.frame_input, textvariable = self.integral_width_var)
         
         input_shift_label_up = tkinter.Label(self.frame_input, text = 'Shift orders up:')
         input_shift_orders_up = tkinter.Entry(self.frame_input, textvariable = self.shift_orders_up_var)
@@ -645,7 +601,6 @@ class calibration_window():
         self.use_sample_var.set(str(self.series_filename))
         self.input_path_var.set(str(self.working_path))
         self.input_order_var.set(str(self.first_order_nr))
-        #self.integral_width_var.set(str(self.integral_width))
         self.shift_orders_up_var.set(0)
         self.shift_orders_right_var.set(0)
         
@@ -655,13 +610,11 @@ class calibration_window():
         input_path.grid(row = 1, column = 1)
         input_order_label.grid(row = 2, column = 0)
         input_order.grid(row = 2, column = 1)
-        #input_width_label.grid(row = 3, column = 0)
-        #input_width.grid(row = 3, column = 1)
-        input_shift_label_up.grid(row = 4, column = 0)
-        input_shift_orders_up.grid(row = 4, column = 1)
-        input_shift_label_right.grid(row = 5, column = 0)
-        input_shift_orders_right.grid(row = 5, column = 1)
-        btn_save_variables.grid(row = 6, column = 0)
+        input_shift_label_up.grid(row = 3, column = 0)
+        input_shift_orders_up.grid(row = 3, column = 1)
+        input_shift_label_right.grid(row = 4, column = 0)
+        input_shift_orders_right.grid(row = 4, column = 1)
+        btn_save_variables.grid(row = 5, column = 0)
         
         
         # User feedback label
@@ -707,7 +660,6 @@ class calibration_window():
         
         btn_reset_mode = tkinter.Button(self.frame_buttons, text = "Reset program mode", command = self.reset_mode)
         btn_select_order = tkinter.Button(self.frame_buttons, text = "Select/deselect order mode", command = self.select_order)
-        #btn_vertical_mode = tkinter.Button(self.frame_buttons, text = "Vertical curve edit mode", command = self.bounds_mode)
         btn_orders_mode = tkinter.Button(self.frame_buttons, text = "Diffr order edit mode", command = self.orders_mode)
         
         btn_add_order = tkinter.Button(self.frame_buttons, text = "Add diffr order", command = self.add_order)
@@ -717,7 +669,6 @@ class calibration_window():
         btn_reset_mode.pack()
         btn_select_order.pack()
         btn_orders_mode.pack()
-        #btn_vertical_mode.pack()
         
         btn_add_order.pack()
         btn_delete_order.pack()
@@ -742,10 +693,6 @@ class calibration_window():
         btn_load_order_points.pack()
         btn_save_coefs.pack()
         btn_orders_tidy.pack()
-        
-        #add_point_left = tkinter.Button(self.frame_buttons, text = "Add point to left vertical", command = self.add_calibr_point_left)
-        #add_point_right = tkinter.Button(self.frame_buttons, text = "Add point to right vertical", command = self.add_calibr_point_right)
-        #add_point_order = tkinter.Button(self.frame_buttons, text = "Add point to order", command = self.add_calibr_point_order)
         
         
         
@@ -786,10 +733,7 @@ class calibration_window():
         
         
         self.root.title("Echellogram calibration")
-        #self.root.configure(background="yellow")
         self.root.minsize(600, 600)
-        #self.root.maxsize(500, 500)
-        #self.root.geometry("300x300+50+50")
         
         #self.root.update()
         #self.pack_window_elements()
@@ -846,14 +790,10 @@ class calibration_window():
         
         # initialize calib_data with photo_array bounds for better plotting
         if calibration_dict is None:
-            self.calib_data['start'] = start_points(image_width = self.photo_array.shape[0])
-            self.calib_data['end'] = end_points(image_width = self.photo_array.shape[0])
             self.calib_data['orders'] = [ order_points(image_width = self.photo_array.shape[0]) ]
             
             
         else: # load saved data
-            self.calib_data['start'] = start_points(existing_data = calibration_dict['start'])
-            self.calib_data['end'] = end_points(existing_data = calibration_dict['end'])
             
             # Iterate over orders
             self.calib_data['orders'] = []
@@ -1030,8 +970,6 @@ class calibration_window():
         self.selected_order = None
         self.curve_edit_mode = False
         
-        self.show_verticals = False
-        self.hide_unhide_verticals()
         
         if button_call:
             self.set_feedback('Mode: reset')
@@ -1041,22 +979,9 @@ class calibration_window():
         self.program_mode = 'select'
         self.curve_edit_mode = False
     
-        self.show_verticals = False
-        self.hide_unhide_verticals()
     
         self.set_feedback('Mode: select')
         
-    
-    '''
-    def bounds_mode(self):
-        self.program_mode = 'bounds'
-        self.selected_order = None
-        
-        self.show_verticals = True
-        self.hide_unhide_verticals()
-        
-        self.set_feedback('Mode: vertical curves', 1000)
-    '''
     
     # In this mode you can move the selected diffraction order points, no effect if no order selected
     def orders_mode(self):
@@ -1144,8 +1069,6 @@ class calibration_window():
         
         # decode objects into dictionaries
         save_dict = {}
-        save_dict['start'] = self.calib_data['start'].save_decode()
-        save_dict['end'] = self.calib_data['end'].save_decode()
         save_dict['orders'] = [] 
         
         # Iterate over orders
@@ -1359,9 +1282,6 @@ class calibration_window():
         if self.program_mode == 'select':
             self.select_click(click_point)
             
-        # Modify vertical curves
-        elif self.program_mode == 'bounds':
-            self.bounds_click(click_point)
             
         # Modify horizontal curves
         elif self.program_mode == 'orders':
@@ -1442,41 +1362,7 @@ class calibration_window():
         # Redraw plot
         if self.autoupdate_spectrum and (not self.program_mode is None):
             self.update_spectrum()
-        
-    
-    def bounds_click(self, click_point):
-        all_points = gather_points([self.calib_data['start'].points, self.calib_data['end'].points])
-        
-        # get closest calibration point
-        min_distance = math.inf
-        #best_point = None
-        #best_point_idx = 0
-        for idx in range(len(all_points)):
-            distance = all_points[idx].distance(click_point)
-            if distance < min_distance:
-                best_point_idx = idx
-                min_distance = distance
-                best_point = all_points[idx]
-        
-        #print('best: ', best_point.group, best_point_idx, best_point.x, best_point.y)
-        
-        # convert idx to index of first or second list
-        group_idx = best_point_idx
-        if best_point_idx > (len(self.calib_data['start'].points) - 1):
-            group_idx = best_point_idx - len(self.calib_data['start'].points)
-        
-        
-        click_point.group = best_point.group
-        self.calib_data[best_point.group].points[group_idx] = click_point
-        
-        self.calib_data['start'].update()
-        self.calib_data['end'].update()
-        self.update_vertical_curves()
-        
-        # Redraw plot
-        if self.autoupdate_spectrum and (not self.program_mode is None):
-            self.update_spectrum()
-        
+       
     
     def shift_orders_up(self, shift_amount = 0, button_call = True):
         if shift_amount == 0:
@@ -1625,27 +1511,9 @@ class calibration_window():
         
     
     def draw_calibr_curves(self):
-        self.plot_verticals()
         self.plot_orders()
         self.draw_all_bounds()
     
-    
-    def plot_verticals(self):
-        # Get line data
-        y_values = np.arange(self.photo_array.shape[0])
-        left_curve_array, self.left_poly_coefs = get_polynomial_points(self.calib_data['start'], self.photo_array.shape[0], flip = True)
-        right_curve_array, self.right_poly_coefs = get_polynomial_points(self.calib_data['end'], self.photo_array.shape[0], flip = True)
-        
-        # Plot curves
-        self.start_curve, = self.plot_ax.plot(left_curve_array, y_values, 'tab:orange')
-        self.end_curve, = self.plot_ax.plot(right_curve_array, y_values, 'tab:orange')
-        
-        # Plot calibration points
-        self.start_curve_points, = self.plot_ax.plot(self.calib_data['start'].xlist, self.calib_data['start'].ylist, color = 'k', marker = 'o', linestyle = '', markersize = 4)
-        self.end_curve_points, = self.plot_ax.plot(self.calib_data['end'].xlist, self.calib_data['end'].ylist, color = 'k', marker = 'o', linestyle = '', markersize = 4)
-        
-        # Hide if needed
-        self.hide_unhide_verticals()
     
     # Iterate over diffraction orders and plot them
     
@@ -1730,7 +1598,6 @@ class calibration_window():
         
         self.update_point_instances()
         
-        self.update_vertical_curves()
         self.update_order_curves()
         
         # sort orders by average y values
@@ -1750,48 +1617,12 @@ class calibration_window():
     # Update instances of point classes
     
     def update_point_instances(self):
-        self.calib_data['start'].update()
-        self.calib_data['end'].update()
         for idx in range(len(self.calib_data['orders'])):
             self.calib_data['orders'][idx].update()
     
-    # Redraw vertical calibration curves
-    
-    def update_vertical_curves(self):
-        
-        if not self.show_verticals:
-            return
-        
-        # points
-        self.start_curve_points.set_xdata(self.calib_data['start'].xlist)
-        self.start_curve_points.set_ydata(self.calib_data['start'].ylist)
-        self.end_curve_points.set_xdata(self.calib_data['end'].xlist)
-        self.end_curve_points.set_ydata(self.calib_data['end'].ylist)
-        
-        
-        # Get line data
-        left_curve_array, self.left_poly_coefs = get_polynomial_points(self.calib_data['start'], self.photo_array.shape[0], flip = True)
-        right_curve_array, self.right_poly_coefs = get_polynomial_points(self.calib_data['end'], self.photo_array.shape[0], flip = True)
-        
-        # Plot curves
-        self.start_curve.set_xdata(left_curve_array)
-        self.end_curve.set_xdata(right_curve_array)
-        
-        self.update_order_curves()
-        
-        self.calculate_all_bounds(initialize_x = True, use_verticals = True)
-        
-        self.update_all_bounds(use_verticals = True) # TODO: fix hack (bounds need previous order update)
-        
-        self.set_feedback('Bounds overwritten with polynomial data', 5000)
-        
-        # Draw plot again and wait for drawing to finish
-        self.canvas.draw()
-        self.canvas.flush_events() 
     
     
     # Redraw horizontal calibration curves
-    
     def update_order_curves(self):
         
         if (not self.show_orders) and (self.program_mode != 'bounds'):
@@ -1837,15 +1668,13 @@ class calibration_window():
             self.canvas.flush_events() 
         
     
-    # TODO: vertical curve edit mode doesn't change bounds on graph
-    
-    def update_all_bounds(self, use_verticals = False):
+    def update_all_bounds(self):
         for idx in range(len(self.calib_data['orders'])):
-            self.update_one_bounds(idx, use_verticals = use_verticals)
+            self.update_one_bounds(idx)
             
     # Re-draw bounds
-    def update_one_bounds(self, order_idx, use_verticals = False):
-        x_start, x_end, y_start, y_end = self.calculate_bounds(order_idx, initialize_x = True, use_verticals = use_verticals)
+    def update_one_bounds(self, order_idx):
+        x_start, x_end, y_start, y_end = self.calculate_bounds(order_idx, initialize_x = True)
         self.order_bound_points[order_idx].set_xdata([x_start, x_end])
         self.order_bound_points[order_idx].set_ydata([y_start, y_end])
         
@@ -1866,16 +1695,6 @@ class calibration_window():
          # Draw plot again and wait for drawing to finish
          self.canvas_spectrum.draw()
          self.canvas_spectrum.flush_events() 
-     
-    def hide_unhide_verticals(self):
-        self.start_curve.set_visible(self.show_verticals)
-        self.start_curve_points.set_visible(self.show_verticals)
-        self.end_curve.set_visible(self.show_verticals)
-        self.end_curve_points.set_visible(self.show_verticals)
-        
-        # Draw plot again and wait for drawing to finish
-        self.canvas.draw()
-        self.canvas.flush_events() 
     
     def hide_unhide_orders(self):
         
@@ -1897,16 +1716,16 @@ class calibration_window():
     # Misc
     #######################################################################################
     
-    def calculate_all_bounds(self, initialize_x = False, use_verticals = False):
+    def calculate_all_bounds(self, initialize_x = False):
         for idx in range(len(self.calib_data['orders'])):
-            self.calculate_bounds(idx, initialize_x = initialize_x, use_verticals = use_verticals)
+            self.calculate_bounds(idx, initialize_x = initialize_x)
     
-    def calculate_bounds(self, order_idx, initialize_x = False, use_verticals = False):
+    def calculate_bounds(self, order_idx, initialize_x = False):
         order = self.calib_data['orders'][order_idx]
         [px_start, px_end] = order.bounds_px
         
-        if initialize_x or use_verticals or (px_start is None) or (px_end is None):
-            px_start, px_end = self.initialize_bounds(order_idx, use_verticals = use_verticals)
+        if initialize_x or (px_start is None) or (px_end is None):
+            px_start, px_end = self.initialize_bounds(order_idx)
         
         coefs = np.polynomial.polynomial.polyfit(order.xlist, order.ylist, 2)
         y_start = poly_func_value(px_start, coefs)
@@ -1915,7 +1734,7 @@ class calibration_window():
         return px_start, px_end, y_start, y_end
     
     # Calculate bounds by the crossing of curves and save into order points class
-    def initialize_bounds(self, order_idx, use_verticals = False):
+    def initialize_bounds(self, order_idx):
         nr_pixels = self.photo_array.shape[0]
         
         curve_x = self.order_plot_curves[order_idx].get_xdata()
@@ -1925,20 +1744,6 @@ class calibration_window():
         curve_x, curve_y = sort_related_arrays(curve_x, curve_y) 
         
         
-        
-        '''
-        # Calculate by vertical polynomials
-        if use_verticals or (self.order_bounds is None):
-            pass
-            
-            left_curve = self.start_curve.get_xdata()
-            right_curve = self.end_curve.get_xdata()
-            px_start, px_end = get_order_bounds(nr_pixels, curve_x, curve_y, left_curve, right_curve)
-            
-        
-        # By default calculate by input data
-        else:
-        '''
         
         # Initialize bounds only once
         if self.calib_data['orders'][order_idx].bounds_px_original[0] is None: 
@@ -2025,23 +1830,12 @@ class calibration_window():
     
     
    
-    # Get z-values of corresponding x and y values and cut them according to left and right curves
+    # Get z-values of corresponding x and y values and cut them according to left and right bounds
     def get_order_spectrum(self):
         x_values = None
         z_values = []
         
         
-        '''
-        # load left-right calibration curve data
-        x2 = self.start_curve.get_xdata()
-        y2 = self.start_curve.get_ydata().astype(np.float64)
-        x3 = self.end_curve.get_xdata()
-        y3 = self.end_curve.get_ydata()
-        
-        # sort the arrays in increasing x value
-        x2, y2 = sort_related_arrays(x2, y2)
-        x3, y3 = sort_related_arrays(x3, y3)
-        '''
         nr_pixels = self.photo_array.shape[0]
         photo_pixels = np.arange(nr_pixels)
         
@@ -2064,15 +1858,8 @@ class calibration_window():
             #y_pixels = y_pixels.astype(np.int32) # convert to same format as x-values
             y_pixels = curve_y.astype(np.int32) # convert to same format as x-values
             
-            #left_curve = self.start_curve.get_xdata()
-            #right_curve = self.end_curve.get_xdata()
             
             # Get bounds for this diffraction order
-            #x_left, x_right = get_order_bounds(nr_pixels, curve_x, curve_y, left_curve, right_curve)
-            #x_left = get_polynomial_intersection(self.order_poly_coefs[order_idx], self.left_poly_coefs, nr_pixels, is_left = True)
-            #x_right = get_polynomial_intersection(self.order_poly_coefs[order_idx], self.right_poly_coefs, nr_pixels, is_left = False)
-            
-            #print(x_left, x_right)
             [x_left, x_right] = self.calib_data['orders'][order_idx].bounds_px
             
             # Default bounds as first px and last px
@@ -2084,7 +1871,7 @@ class calibration_window():
             # get z-values corresponding to the interpolated pixels on the order curve
             for idx2 in photo_pixels: # TODO: add width integration
                 
-                # Save px only if it's between left and right calibration curves
+                # Save px only if it's between left and right bounds
                 x_px = curve_x[idx2]
                 
                 # Do stuff if point is between bounds
@@ -2197,68 +1984,6 @@ def integrate_order_width(photo_array, x_pixel, y_pixel, width = 1, use_weights 
     
     return integral
 
-'''
-# Get intersections between order and left-right vertical curves. Assumes non-crazy verticals (not over half)
-def get_order_bounds(image_size, order_curve_x, order_curve_y, left_curve, right_curve):
-    
-    # Initialize
-    x_start = 0
-    x_end = image_size - 1
-    
-    # TODO: more efficient algorithm or figure out polynomial rotation in a foolproof way
-    
-    sweet_spot_distance = 3
-    
-    # Iterate over pixels towards left, starting from center
-    for idx in range(math.ceil(image_size / 2) - 1, -1, -1):
-        order_x = idx
-        order_y = order_curve_y[idx]
-        vertical_y = round(order_y)
-        vertical_x = left_curve[vertical_y] # self.start_curve has x-values in ascending order of y
-        
-        # save point if closer to intersection than previous
-        min_dist = math.inf
-        close_to_intersection = False
-        if (abs(order_x - vertical_x)  < sweet_spot_distance) and (abs(order_y - vertical_y) < sweet_spot_distance): # within 3 pixels of intersection
-            close_to_intersection = True
-            order_point = point_class(order_x, order_y)
-            vertical_point = point_class(vertical_x, vertical_y)
-            
-            distance = order_point.distance(vertical_point)
-            if distance < min_dist:
-                min_dist = distance
-                x_start = order_point.x
-        
-        elif close_to_intersection and (abs(order_x - vertical_x)  > sweet_spot_distance) and (abs(order_y - vertical_y) > sweet_spot_distance): # past the sweet spot, save calculation time
-            break
-    
-    # Iterate over pixels towards right, starting from center
-    for idx in range(math.ceil(image_size / 2) - 1, image_size):
-        order_x = idx
-        order_y = order_curve_y[idx]
-        vertical_y = round(order_y)
-        vertical_x = right_curve[vertical_y] # self.start_curve has x-values in ascending order of y
-        
-        # save point if closer to intersection than previous
-        min_dist = math.inf
-        close_to_intersection = False
-        if (abs(order_x - vertical_x)  < sweet_spot_distance) and (abs(order_y - vertical_y) < sweet_spot_distance): # within 3 pixels of intersection
-            close_to_intersection = True
-            order_point = point_class(order_x, order_y)
-            vertical_point = point_class(vertical_x, vertical_y)
-            
-            distance = order_point.distance(vertical_point)
-            if distance < min_dist:
-                min_dist = distance
-                x_end = order_point.x
-        
-        elif close_to_intersection and (abs(order_x - vertical_x)  > sweet_spot_distance) and (abs(order_y - vertical_y) > sweet_spot_distance): # past the sweet spot, save calculation time
-            break
-    
-    
-    return x_start, x_end
-
-'''
 
 def get_polynomial_intersection(coefs1, coefs2, image_size, is_left = True):
     x1, y1, x2, y2 = calc_polynomial_intersection(coefs1, coefs2)
