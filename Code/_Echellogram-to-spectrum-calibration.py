@@ -1,7 +1,12 @@
 # Author: Jasper Ristkok
-# v1.8.2
+# v2.0
 
 # Code to convert an echellogram (photo) to spectrum
+
+# TODO: check out of bounds orders
+# TODO: check order edit mode
+# TODO: better align (interpolate) calibration curves
+
 
 
 ##############################################################################################################
@@ -559,7 +564,9 @@ class calibration_window():
         self.frame_right = tkinter.Frame(self.root)
         
         self.frame_buttons_input = tkinter.Frame(self.frame_left)
+        self.frame_input_wide = tkinter.Frame(self.frame_buttons_input)
         self.frame_input = tkinter.Frame(self.frame_buttons_input)
+        self.frame_text = tkinter.Frame(self.frame_buttons_input)
         self.frame_buttons = tkinter.Frame(self.frame_buttons_input)
         
         self.frame_image = tkinter.Frame(self.frame_right)
@@ -576,10 +583,11 @@ class calibration_window():
         self.shift_orders_up_var = tkinter.StringVar()
         self.shift_orders_right_var = tkinter.StringVar()
         
-        input_sample_label = tkinter.Label(self.frame_input, text = 'Use sample:')
-        input_sample = tkinter.Entry(self.frame_input, textvariable = self.use_sample_var)
-        input_path_label = tkinter.Label(self.frame_input, text = 'Directory path:')
-        input_path = tkinter.Entry(self.frame_input, textvariable = self.input_path_var)
+        input_sample_label = tkinter.Label(self.frame_input_wide, text = 'Use sample:')
+        input_sample = tkinter.Entry(self.frame_input_wide, textvariable = self.use_sample_var)
+        input_path_label = tkinter.Label(self.frame_input_wide, text = 'Directory path:')
+        input_path = tkinter.Entry(self.frame_input_wide, textvariable = self.input_path_var)
+        
         input_order_label = tkinter.Label(self.frame_input, text = 'Overwrite first order nr:')
         input_order = tkinter.Entry(self.frame_input, textvariable = self.input_order_var)
         
@@ -596,30 +604,37 @@ class calibration_window():
         self.shift_orders_up_var.set(0)
         self.shift_orders_right_var.set(0)
         
-        input_sample_label.grid(row = 0, column = 0)
-        input_sample.grid(row = 0, column = 1)
-        input_path_label.grid(row = 1, column = 0)
-        input_path.grid(row = 1, column = 1)
-        input_order_label.grid(row = 2, column = 0)
-        input_order.grid(row = 2, column = 1)
-        input_shift_label_up.grid(row = 3, column = 0)
-        input_shift_orders_up.grid(row = 3, column = 1)
-        input_shift_label_right.grid(row = 4, column = 0)
-        input_shift_orders_right.grid(row = 4, column = 1)
-        btn_save_variables.grid(row = 5, column = 0)
+        
+        #input_sample_label.grid(row = 0, column = 0)
+        #input_sample.grid(row = 1, column = 0)
+        #input_path_label.grid(row = 2, column = 0)
+        #input_path.grid(row = 3, column = 0)
+        
+        input_sample_label.pack(fill='x', expand=1)
+        input_sample.pack(fill='x', expand=1)
+        input_path_label.pack(fill='x', expand=1)
+        input_path.pack(fill='x', expand=1)
+        
+        input_order_label.grid(row = 4, column = 0)
+        input_order.grid(row = 4, column = 1)
+        input_shift_label_up.grid(row = 5, column = 0)
+        input_shift_orders_up.grid(row = 5, column = 1)
+        input_shift_label_right.grid(row = 6, column = 0)
+        input_shift_orders_right.grid(row = 6, column = 1)
+        btn_save_variables.grid(row = 7, column = 0)
         
         
         # User feedback label
         ######################################
         # Separator and label
-        separator = ttk.Separator(self.frame_buttons, orient='horizontal')
-        label_separator_visual = tkinter.Label(self.frame_buttons, text = 'Program feedback:')
+        separator = ttk.Separator(self.frame_text, orient='horizontal')
+        label_separator_visual = tkinter.Label(self.frame_text, text = 'Program log:')
         separator.pack(fill = 'x')
         label_separator_visual.pack()
         
         # Labels
-        self.feedback_label = tkinter.Label(self.frame_buttons, text = '')
-        self.feedback_label.pack(side = 'top')
+        self.feedback_text = tkinter.Text(self.frame_text, height = 4, width = 30)
+        self.feedback_text.pack(side = 'top')
         
         
         # Important main buttons
@@ -740,7 +755,9 @@ class calibration_window():
         
         
         self.frame_buttons_input.pack(side = 'left')
+        self.frame_input_wide.pack(side = 'top', expand = 1, fill = 'x')
         self.frame_input.pack(side = 'top')
+        self.frame_text.pack(side = 'top')
         self.frame_buttons.pack(side = 'top')
         
         
@@ -1074,7 +1091,6 @@ class calibration_window():
         
         self.curve_edit_mode = True
         self.program_mode = 'orders'
-        self.selected_order_nr = None
         
         self.show_orders = True
         #self.update_order_curves()
@@ -1174,8 +1190,8 @@ class calibration_window():
         self.hide_unhide_orders()
         
         diffr_order = order_points(self.photo_array.shape[0])
-        self.calib_data_dynamic += [diffr_order]
-        self.plot_order(diffr_order)
+        self.calib_data_dynamic.append(diffr_order)
+        self.plot_order(diffr_order, color = 'white')
         
         # sort orders by average y values
         #self.calib_data_dynamic.sort(key=lambda x: x.avg_y, reverse=True)
@@ -1193,7 +1209,7 @@ class calibration_window():
         self.canvas.draw()
         self.canvas.flush_events() 
         
-        
+        #self.order_bound_points[idx]
         
         #self.update_order_curves()
         self.update_spectrum(autoscale = True)
@@ -1208,7 +1224,7 @@ class calibration_window():
     def delete_order(self):
         
         if self.best_order_idx is None:
-            self.set_feedback('No order selected, use diff edit mode first', 8000)
+            self.set_feedback('No order selected', 8000)
             return
         
         # Show orders
@@ -1590,7 +1606,7 @@ class calibration_window():
             self.plot_order(order, x_values)
         
     
-    def plot_order(self, order, x_values = None):
+    def plot_order(self, order, x_values = None, color = 'r'):
         if x_values is None:
             x_values = np.arange(self.photo_array.shape[0])
         
@@ -1600,7 +1616,7 @@ class calibration_window():
         self.order_poly_coefs.append(poly_coefs)
         
         # Plot curve
-        curve, = self.plot_ax.plot(x_values, curve_array, 'r')
+        curve, = self.plot_ax.plot(x_values, curve_array, color)
         self.order_plot_curves.append(curve)
         
         # Plot calibration points
@@ -1646,13 +1662,16 @@ class calibration_window():
     #######################################################################################
     
     def clear_feedback(self):
-        self.feedback_label.config(text = '')
+        #self.feedback_text.config(text = '')
+        self.feedback_text.delete("1.0", tkinter.END)
     
     def set_feedback(self, string, delay = 3000):
         delay = clip(delay, 2000, 10000)
         
-        self.feedback_label.config(text = string)
-        self.feedback_label.after(delay, self.clear_feedback) # clear feedback after delay
+        self.feedback_text.insert("1.0", string)
+        
+        #self.feedback_text.config(text = string)
+        self.feedback_text.after(delay, self.clear_feedback) # clear feedback after delay
     
     
     
