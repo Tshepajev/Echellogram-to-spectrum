@@ -1,5 +1,5 @@
 # Author: Jasper Ristkok
-# v1.8
+# v1.8.2
 
 # Code to convert an echellogram (photo) to spectrum
 
@@ -385,6 +385,7 @@ class static_calibration_data():
         static_dict['bounds_px_original'] = self.bounds_px_original
         static_dict['bounds_wave_original'] = self.bounds_wave_original
         static_dict['total_shift_horizontal'] = self.total_shift_horizontal
+        static_dict['use_order'] = self.use_order
         
         return static_dict
     
@@ -396,6 +397,7 @@ class static_calibration_data():
         self.bounds_px_original = existing_data['bounds_px_original']
         self.bounds_wave_original = existing_data['bounds_wave_original']
         self.total_shift_horizontal = existing_data['total_shift_horizontal']
+        self.use_order = existing_data['use_order']
 
 # Line of a diffraction order (horizontal), x is horizontal and y vertical pixels
 class order_points():
@@ -490,7 +492,7 @@ class calibration_window():
             print(e)
             self.set_feedback(str(e), 10000)
             
-            
+            # Print where exactly the exeption was raised
             print("Exception occurred in functiontree:")
             tb = e.__traceback__
             while tb.tb_next:  # Walk to the last traceback frame (where exception was raised)
@@ -859,6 +861,8 @@ class calibration_window():
             static_dict = order.save_decode()
             save_dict['static'].append(static_dict)
         
+        save_dict['first_order_nr'] = self.first_order_nr
+        
         # Save as JSON readable output
         with open(output_path + '_Calibration_data.json', 'w') as file: # '_' in front to find easily among Echellograms
             json.dump(save_dict, file, sort_keys=True, indent=4)
@@ -947,6 +951,7 @@ class calibration_window():
     # spectral lines are at correct wavelengths
     def autocalibrate(self):
         best_shift, best_int = self.autocalibrate_vertical()
+        self.set_feedback('Optimal vertical shift found')
         self.autocalibrate_horizontal()
     
     
@@ -957,9 +962,11 @@ class calibration_window():
         
         # Try shifting curves 1 px up and 1 px down, then 2 px up (from start) then down etc
         int_dict = {1 : 0, -1 : 0}
-        shift_orders_amount = 1
+        shift_orders_amount = 0.75
+        step_size = shift_orders_amount
         direction = 1 # 1 is up on image (lower y-value)
         best_shift = 0
+        total_shift = 0
         while shift_orders_amount < 20:
             
             # There was no better shift in either direction for 2 px
@@ -968,25 +975,38 @@ class calibration_window():
             
             # This direction isn't good, there have been 2 subsequent worse shifts
             if int_dict[direction] >= 2:
+                
+                # Keep shifting in good direction ca one pixel at a time
+                shift_orders_amount = 0.75
+                step_size = 0
+                
+                # Ignore current wrong direction
                 direction *= -1
                 continue
             
             shift_amount = shift_orders_amount * direction
             new_int = self.autocalibrate_shift_vertical(shift_amount)
             
+            total_shift += shift_amount
+            
             # Save better shift or worse shift
             if new_int > best_int:
-                best_shift = shift_amount
+                best_shift = total_shift
                 best_int = new_int
             else:
-                int_dict[direction].append(new_int)
+                int_dict[direction] += 1
             
             # Try other direction
             direction *= -1
             
             # Both directions done, try bigger shift
             if direction == 1:
-                shift_orders_amount += 1
+                shift_orders_amount += step_size
+        
+        # Shift back to optimal location
+        if total_shift != best_shift:
+            shift_amount = best_shift - total_shift
+            self.autocalibrate_shift_vertical(shift_amount)
         
         return best_shift, best_int
     
@@ -998,7 +1018,7 @@ class calibration_window():
         self.update_point_instances()
         self.update_order_curves()
         self.calculate_all_bounds(initialize_x = True)
-        self.update_spectrum(autoscale = True)
+        self.update_spectrum(autoscale = True) # calculated spectrum int
         
         new_int = self.spectrum_total_intensity
         
@@ -1915,7 +1935,7 @@ class calibration_window():
                 x_right = nr_pixels - 1
             
             # get z-values corresponding to the interpolated pixels on the order curve
-            for idx2 in photo_pixels: # TODO: add width integration
+            for idx2 in photo_pixels:
                 
                 # Save px only if it's between left and right bounds
                 x_px = curve_x[idx2]
