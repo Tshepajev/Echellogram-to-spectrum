@@ -1,5 +1,5 @@
 # Author: Jasper Ristkok
-# v2.1
+# v2.1.1
 
 # Code to convert an echellogram (photo) to spectrum
 
@@ -1253,13 +1253,13 @@ class calibration_window():
     # Read in csv file and overwrite order points based on these
     def load_order_points(self):
         
-        all_points = np.loadtxt(input_data_path + 'Order_points.csv', delimiter=',', skiprows = 1)
+        all_points = np.loadtxt(input_data_path + '_Order_points.csv', delimiter=',', skiprows = 1)
         
         for order_idx in range(len(self.calib_data_dynamic)):
             order = self.calib_data_dynamic[order_idx]
             
             # get order_nr row index from data
-            order_nr = self.calib_data_static[order_idx]
+            order_nr = self.calib_data_static[order_idx].order_nr
             row_idxs = np.where(all_points[:,0] == order_nr)[0] # get indices of rows where order nr is the same
             
             # Get bounds
