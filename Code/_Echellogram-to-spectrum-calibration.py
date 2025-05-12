@@ -1,5 +1,5 @@
 # Author: Jasper Ristkok
-# v2.1.1
+# v2.2
 
 # Code to convert an echellogram (photo) to spectrum
 
@@ -587,6 +587,8 @@ class calibration_window():
         input_shift_orders_right = tkinter.Entry(self.frame_input, textvariable = self.shift_orders_right_var)
         
         btn_save_variables = tkinter.Button(self.frame_input, text = "Save variables", command = self.save_variables)
+        btn_reset_shift = tkinter.Button(self.frame_input, text = "Reset shifts", command = self.reset_shift)
+        
         
         self.use_sample_var.set(str(self.series_filename))
         self.input_path_var.set(str(self.working_path))
@@ -612,6 +614,7 @@ class calibration_window():
         input_shift_label_right.grid(row = 6, column = 0)
         input_shift_orders_right.grid(row = 6, column = 1)
         btn_save_variables.grid(row = 7, column = 0)
+        btn_reset_shift.grid(row = 7, column = 1)
         
         
         # User feedback label
@@ -757,7 +760,7 @@ class calibration_window():
     #######################################################################################
     
     # Load data from path and initialize program with it
-    def load_folder(self, path, do_reset = False):
+    def load_folder(self, path, do_reset = False, new_sample = None):
         
         # Clear already existing plots
         if do_reset:
@@ -766,7 +769,7 @@ class calibration_window():
         # reset variables
         self.reset_class_variables_soft()
         self.working_path = path
-        self.series_filename = None
+        self.series_filename = new_sample
         
         # Get input data (calibration data, Echellograms etc.)
         try:
@@ -1037,7 +1040,7 @@ class calibration_window():
         # New folder, do almost everything from scratch, ignore other saved variables
         if path != self.working_path:
             self.series_filename = new_sample
-            self.update_path(path)
+            self.update_path(path, new_sample = new_sample)
             return
         
         # Use new sample, load data again and draw plots again
@@ -1072,8 +1075,13 @@ class calibration_window():
         self.set_feedback('Input variables saved')
         
     
-    def update_path(self, path, new_sample):
+    def update_path(self, path, new_sample = None):
         self.set_feedback('New folder loaded')
+        
+        # Check if path has slash at the end
+        if path[-1] != system_path_symbol:
+            path += system_path_symbol
+            self.input_path_var.set(path)
         
         # Update paths
         global input_photos_path, input_data_path, averaged_path, output_path, spectrum_path
@@ -1090,7 +1098,7 @@ class calibration_window():
             output_path = path
             spectrum_path = path
         
-        self.load_folder(path, do_reset = True)
+        self.load_folder(path, do_reset = True, new_sample = new_sample)
     
     def update_sample(self, new_sample):
         # Load new sample data
@@ -1644,7 +1652,7 @@ class calibration_window():
             for point in order.points:
                 point.x += shift_amount # shift right
             
-            self.recalculate_bounds(order_idx)
+            self.recalculate_bounds(order_idx, last_shift = shift_amount)
             
         
         self.set_feedback('Orders shifted right by ' + str(shift_amount) + ' px')
@@ -1656,8 +1664,11 @@ class calibration_window():
             self.calculate_all_bounds(initialize_x = True)
             self.update_spectrum(autoscale = True)
     
-    def recalculate_bounds(self, order_idx):
-        if self.total_shift_right == 0:
+    
+    def recalculate_bounds(self, order_idx, last_shift = 0):
+        
+        # Short-circuit the function if there's no need to properly calculate stuff again
+        if (self.total_shift_right == 0) and (last_shift == 0):
             return self.calib_data_static[order_idx].bounds_px
         
         # shift order bounds
@@ -1675,6 +1686,25 @@ class calibration_window():
             self.calib_data_static[order_idx].bounds_wave = [left_wave, right_wave]
         
         return [left_px, right_px]
+    
+    
+    # Reads total shift up and right and resets the orders location, so that total shift is 0
+    def reset_shift(self):
+        up = self.total_shift_up
+        right = self.total_shift_right
+        
+        self.shift_orders_up(shift_amount = -self.total_shift_up, button_call = False)
+        self.shift_orders_right(shift_amount = -self.total_shift_right, button_call = False)
+        
+        # Redraw stuff
+        self.update_point_instances()
+        self.update_order_curves()
+        self.calculate_all_bounds(initialize_x = True)
+        self.update_spectrum(autoscale = True)
+        
+        self.set_feedback('Shifts reset. Relative shifts (up, right): ' + str(up) + ', ' + str(right))
+        
+        
     
     #######################################################################################
     # Initialize Matplotlib plot
