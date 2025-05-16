@@ -25,13 +25,12 @@ def main():
 def extract_aryx_spectrum(filepath):
     # [int, wavelength, order_nr, metadata]
     spectrum = ltbfiles.read_ltb_aryx(filepath, sort_wl = False) # sort or not
-    
-    spectrum = remove_overlapping_pixels(spectrum)
-    
     intensity = spectrum.Y
     wavelength = spectrum.x
     order_nr = spectrum.o
     metadata = spectrum.head
+    
+    wavelength, intensity, order = remove_overlapping_pixels(wavelength, intensity, order)
     
     #print('Spectrum metadata: ' + str(wavelength))
     
@@ -44,11 +43,11 @@ def extract_aryx_spectrum(filepath):
     numpy.savetxt(outputpath + 'Extracted_spectrum.csv', array, fmt = '%.10e', delimiter = ',', header = headers, footer = str(metadata), comments = '')
 
 # If two pixels have the same wavelength then one is deleted
-def remove_overlapping_pixels(spectrum):
-    spectrum.x, ind = numpy.unique(spectrum.x, True)
-    spectrum.o = spectrum.o[ind]
-    spectrum.Y = spectrum.Y[ind]
-    return spectrum
+def remove_overlapping_pixels(wavelength, intensity, order):
+    wavelength, ind = numpy.unique(wavelength, True)
+    intensity = intensity[ind]
+    order = order[ind]
+    return wavelength, intensity, order
 
 # https://gitlab.com/ltb_berlin/ltb_files
 # https://ltb_berlin.gitlab.io/ltb_files/ltbfiles.html
