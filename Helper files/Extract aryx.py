@@ -30,7 +30,7 @@ def extract_aryx_spectrum(filepath):
     order_nr = spectrum.o
     metadata = spectrum.head
     
-    wavelength, intensity, order = remove_overlapping_pixels(wavelength, intensity, order)
+    wavelength, intensity, order_nr = remove_overlapping_pixels(wavelength, intensity, order_nr)
     
     #print('Spectrum metadata: ' + str(wavelength))
     
