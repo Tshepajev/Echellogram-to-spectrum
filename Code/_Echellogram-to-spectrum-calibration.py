@@ -1,5 +1,5 @@
 # Author: Jasper Ristkok
-# v2.2
+# v2.3
 
 # Code to convert an echellogram (photo) to spectrum
 
@@ -501,7 +501,7 @@ class calibration_window():
         self.working_path = working_path
         self.series_filename = series_filename # filename (for shot series) to use where index is _0001 but without file extension (.tif)
         
-        self.ignore_top_orders = False
+        self.ignore_top_orders = True
         
         self.reset_class_variables_soft()
     
@@ -642,12 +642,10 @@ class calibration_window():
         # Create buttons
         btn_autocalibrate = tkinter.Button(self.frame_buttons, text = "Try automatic calibration", command = self.autocalibrate)
         btn_button_save = tkinter.Button(self.frame_buttons, text = "Save calibration data", command = self.save_data)
-        btn_shift_wavelengths = tkinter.Button(self.frame_buttons, text = "Toggle shift wavelenghts too", command = self.shift_wavelengths_fn)
-        btn_ignore_orders = tkinter.Button(self.frame_buttons, text = "Ignore orders near top edge", command = self.ignore_top_orders_fn)
+        btn_ignore_orders = tkinter.Button(self.frame_buttons, text = "Toggle ignore orders near top edge", command = self.ignore_top_orders_fn)
         
         btn_autocalibrate.pack()
         btn_button_save.pack()
-        btn_shift_wavelengths.pack()
         btn_ignore_orders.pack()
         
         # Program controlling buttons
@@ -661,7 +659,7 @@ class calibration_window():
         
         btn_reset_mode = tkinter.Button(self.frame_buttons, text = "Reset program mode", command = self.reset_mode)
         btn_select_order = tkinter.Button(self.frame_buttons, text = "Select/deselect order mode", command = self.select_order)
-        btn_orders_mode = tkinter.Button(self.frame_buttons, text = "Diffr order edit mode", command = self.orders_mode)
+        btn_orders_mode = tkinter.Button(self.frame_buttons, text = "Diffr order edit mode (armed)", command = self.orders_mode)
         
         btn_add_order = tkinter.Button(self.frame_buttons, text = "Add diffr order", command = self.add_order)
         btn_delete_order = tkinter.Button(self.frame_buttons, text = "Delete diffr order", command = self.delete_order)
@@ -687,6 +685,7 @@ class calibration_window():
         btn_load_order_points = tkinter.Button(self.frame_buttons, text = "Load order points (file)", command = self.load_order_points)
         btn_save_coefs = tkinter.Button(self.frame_buttons, text = "Output stuff (files)", command = self.write_outputs)
         btn_orders_tidy = tkinter.Button(self.frame_buttons, text = "Tidy order points", command = self.orders_tidy)
+        btn_shift_wavelengths = tkinter.Button(self.frame_buttons, text = "Toggle shift spectrum wavelengths", command = self.shift_wavelengths_fn)
         
         
         # Show buttons
@@ -694,7 +693,7 @@ class calibration_window():
         btn_load_order_points.pack()
         btn_save_coefs.pack()
         btn_orders_tidy.pack()
-        
+        btn_shift_wavelengths.pack()
         
         
         # Visual options
@@ -994,7 +993,7 @@ class calibration_window():
         # Iterate over orders
         for order_idx, order in enumerate(self.calib_data_dynamic):
             if self.ignore_top_orders and self.if_needs_cutting(order_idx):
-                continue
+                continue # TODO for v3: change when implementing edge cutting
             
             points_array = order.save_decode()
             save_dict['dynamic'].append(points_array)
@@ -1125,6 +1124,7 @@ class calibration_window():
     
     
     # Shift orders vertically until spectrum has max value
+    # TODO: sometimes stops sub-optimally (local minimum or flawed logic?)
     def autocalibrate_vertical(self):
         
         best_int = self.spectrum_total_intensity
@@ -1210,10 +1210,13 @@ class calibration_window():
     # If self.shift_wavelengths == True then wavelengths are locked to order curves, otherwise to pixels on image
     def shift_wavelengths_fn(self):
         self.shift_wavelengths = not self.shift_wavelengths
-        self.set_feedback('Shift wavelengths: ' + str(self.shift_wavelengths))
+        # TODO: update spectrum
+        self.set_feedback('Shift spectrum wavelengths (wavelengths locked to orders): ' + str(self.shift_wavelengths))
     
+    # Enable/disable orders that are too close to image top edge
     def ignore_top_orders_fn(self):
         self.ignore_top_orders = not self.ignore_top_orders
+        self.check_top_orders_proximity()
         self.set_feedback('Ignore out of bounds orders: ' + str(self.ignore_top_orders))
     
     
@@ -1286,6 +1289,7 @@ class calibration_window():
     def write_outputs(self):
        self.output_coefs()
        self.output_order_points()
+       self.output_spectrum()
        self.set_feedback('Output written')
    
     # Save the polynomial coefficients of diffraction orders into output
@@ -1305,7 +1309,7 @@ class calibration_window():
                 file.write('\n')
         
         
-    
+    # Write the three points x and y coordinates for each order to extra file
     def output_order_points(self):
         with open(output_path + '_Order_points.csv', 'w') as file:
             file.write('Order_nr,Point0_x,Point0_y,Point1_x,Point1_y,Point2_x,Point2_y\n') # headers
@@ -1320,8 +1324,16 @@ class calibration_window():
                     file.write(',' + str(point.y))
                 
                 file.write('\n')
-        
     
+    # Write the spectrum x and y data to extra file
+    def output_spectrum(self):
+        #x_data = self.spectrum_ax.get_xdata()
+        #y_data = self.spectrum_ax.get_ydata()
+        x_values, z_values, order_nrs = self.get_order_spectrum()
+        data = np.column_stack((x_values, z_values, order_nrs))
+        np.savetxt(output_path + '_Spectrum.csv', data, fmt = '%.8e', delimiter = ',', comments = '', header = 'Wavelength (nm),Intensity,Order nr')
+        
+            
     
     
     # Overwrite the order points with the ones calculated from polynomials
@@ -1677,8 +1689,8 @@ class calibration_window():
         right_px = clip(orig_px_right + self.total_shift_right, 0, self.photo_array.shape[0] - 1)
         self.calib_data_static[order_idx].bounds_px = [left_px, right_px]
         
-        # self.shift_wavelengths == True then wavelengths are locked to order curves, otherwise to pixels on image
-        if self.shift_wavelengths:
+        # If self.shift_wavelengths == True then wavelengths are locked to order curves, otherwise to pixels on image
+        if not self.shift_wavelengths:
             [orig_wave_left, orig_wave_right] = self.calib_data_static[order_idx].bounds_wave_original
             
             left_wave = linear_regression(left_px, orig_px_left, orig_px_right, orig_wave_left, orig_wave_right)
@@ -1843,7 +1855,7 @@ class calibration_window():
         self.spectrum_ax = self.spectrum_fig.gca()
         
         # Plot curve
-        x_values, z_values = self.get_order_spectrum()
+        x_values, z_values, order_nrs = self.get_order_spectrum()
         self.spectrum_curve, = self.spectrum_ax.plot(x_values, z_values, 'tab:pink')
         
         # rescale to fit
@@ -1859,7 +1871,7 @@ class calibration_window():
         #self.feedback_text.config(text = '')
         self.feedback_text.delete("1.0", tkinter.END)
     
-    def set_feedback(self, string, delay = 3000):
+    def set_feedback(self, string, delay = 5000):
         delay = clip(delay, 2000, 10000)
         
         self.feedback_text.insert("1.0", string + '\n')
@@ -1961,7 +1973,7 @@ class calibration_window():
     
     def update_spectrum(self, autoscale = False):
          
-         x_values, z_values = self.get_order_spectrum()
+         x_values, z_values, order_nrs = self.get_order_spectrum()
          
          # Plot curve
          self.spectrum_curve.set_xdata(x_values)
@@ -1995,6 +2007,7 @@ class calibration_window():
     #######################################################################################
     # Misc
     #######################################################################################
+    
     
     def calculate_all_bounds(self, initialize_x = False):
         for idx in range(len(self.calib_data_dynamic)):
@@ -2117,6 +2130,7 @@ class calibration_window():
     def get_order_spectrum(self):
         x_values = None
         z_values = []
+        order_nrs = []
         
         
         nr_pixels = self.photo_array.shape[0]
@@ -2125,7 +2139,7 @@ class calibration_window():
         # Compile z-data from the photo with all diffraction orders
         # Iterate over orders backwards because they are sorted by order nr (top to bottom)
         for order_idx in range(len(self.calib_data_dynamic) - 1, -1, -1):
-            #order = self.calib_data_dynamic[order_idx]
+            order_nr = self.calib_data_static[order_idx].order_nr
             
             #curve_x = photo_pixels
             curve_x = self.order_plot_curves[order_idx].get_xdata()
@@ -2152,7 +2166,8 @@ class calibration_window():
                 x_right = nr_pixels - 1
             
             # get z-values corresponding to the interpolated pixels on the order curve
-            for idx2 in photo_pixels:
+            # Save only pixels that are between bounds, check 20 px left and right from bound for intersection
+            for idx2 in np.arange(max(0, x_left - 20), min(nr_pixels, x_right + 1 + 20), dtype = int):
                 
                 # Save px only if it's between left and right bounds
                 x_px = curve_x[idx2]
@@ -2160,6 +2175,8 @@ class calibration_window():
                 # Do stuff if point is between bounds
                 #if self.point_in_range(x_value, curve_x, curve_y, x2, y2, x3, y3): # intersection function is way too slow
                 if x_left <= x_px <= x_right:
+                    order_nrs.append(order_nr)
+                    
                     y_px = y_pixels[idx2]
                     
                     [wave_start, wave_end] = self.calib_data_static[order_idx].bounds_wave
@@ -2202,7 +2219,7 @@ class calibration_window():
         # While at it, save spectrum total intensity
         self.spectrum_total_intensity = sum(z_values)
         
-        return x_values, z_values
+        return x_values, z_values, order_nrs
     
     
 
@@ -2216,6 +2233,19 @@ class calibration_window():
         wavelength = linear_regression(x_px, px_start, px_end, wave_start, wave_end)
         return wavelength
     
+    # Check if top orders are too close to the edge and if so then don't use these
+    def check_top_orders_proximity(self):
+        
+        max_idx = min(20 + 1, len(self.calib_data_dynamic)) # no point in checking all orders (ignore bottom)
+        for order_idx in range(max_idx):
+            
+            if self.ignore_top_orders and self.if_needs_cutting(order_idx):
+                self.calib_data_static[order_idx].use_order = False
+            else:
+                self.calib_data_static[order_idx].use_order = True
+            
+            # TODO for v3: think through the cases of different length input bounds and 
+            # implement edge cutting
     
     # Check if order is too close to top edge of image
     def if_needs_cutting(self, order_idx):
