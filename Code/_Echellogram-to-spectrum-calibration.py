@@ -377,8 +377,10 @@ class static_calibration_data():
         self.order_nr = order_nr
         self.bounds_px = [None, None] # pixel index after shift
         self.bounds_wave = [None, None] # wavelengths after shift
+        self.bounds_middle = [None, None] # 3rd pixel and 3rd wavelength from the middle of the order after shift
         self.bounds_px_original = [None, None] # pixel index from input file
         self.bounds_wave_original = [None, None] # wavelengths from input file
+        self.bounds_middle_orig = [None, None] # 3rd pixel and 3rd wavelength from the middle of the order
         self.use_order = True
         
         if existing_data:
@@ -390,8 +392,10 @@ class static_calibration_data():
         static_dict['order_nr'] = self.order_nr
         static_dict['bounds_px'] = self.bounds_px
         static_dict['bounds_wave'] = self.bounds_wave
+        static_dict['bounds_middle'] = self.bounds_middle
         static_dict['bounds_px_original'] = self.bounds_px_original
         static_dict['bounds_wave_original'] = self.bounds_wave_original
+        static_dict['bounds_middle_orig'] = self.bounds_middle_orig
         static_dict['use_order'] = self.use_order
         
         return static_dict
@@ -404,6 +408,12 @@ class static_calibration_data():
         self.bounds_px_original = existing_data['bounds_px_original']
         self.bounds_wave_original = existing_data['bounds_wave_original']
         self.use_order = existing_data['use_order']
+        
+        # backwards compatibility
+        keys = existing_data.keys()
+        if 'bounds_middle' in keys:
+            self.bounds_middle = existing_data['bounds_middle']
+            self.bounds_middle_orig = existing_data['bounds_middle_orig']
 
 # Line of a diffraction order (horizontal), x is horizontal and y vertical pixels
 class order_points():
@@ -490,6 +500,7 @@ class calibration_window():
         
         # Draw tkinter window elements (needs to be after drawing the plots)
         self.pack_window_elements()
+        
 
 
     
@@ -502,7 +513,10 @@ class calibration_window():
         self.series_filename = series_filename # filename (for shot series) to use where index is _0001 but without file extension (.tif)
         
         self.ignore_top_orders = True
-        
+        self.autoscale_spectrum = False
+        self.shift_wavelengths = True # If self.shift_wavelengths == True then wavelengths are locked to order curves, otherwise to pixels on image
+        self.shift_only_bounds_right = True # keeps curves on same location on image during horizontal shift
+         
         self.reset_class_variables_soft()
     
     # Gets also called on path change (new folder might contain different calibration data/bounds file). 
@@ -516,9 +530,7 @@ class calibration_window():
         self.autoupdate_spectrum = True
         self.program_mode = None
         self.selected_order_nr = None
-        self.best_order_idx = None
-        self.autoscale_spectrum = True
-        self.shift_wavelengths = True # If self.shift_wavelengths == True then wavelengths are locked to order curves, otherwise to pixels on image
+        self.selected_order_idx = None
         self.curve_edit_mode = False # TODO: delete?
         
         
@@ -528,6 +540,7 @@ class calibration_window():
         self.order_plot_points = []
         self.order_poly_coefs = []
         self.order_bound_points = []
+        self.spectrum_curve = None
         
         #self.order_data = {} # necessary because order classes get sorted and indices change
         
@@ -643,10 +656,14 @@ class calibration_window():
         btn_autocalibrate = tkinter.Button(self.frame_buttons, text = "Try automatic calibration", command = self.autocalibrate)
         btn_button_save = tkinter.Button(self.frame_buttons, text = "Save calibration data", command = self.save_data)
         btn_ignore_orders = tkinter.Button(self.frame_buttons, text = "Toggle ignore orders near top edge", command = self.ignore_top_orders_fn)
+        btn_only_shift_bounds = tkinter.Button(self.frame_buttons, text = "Toggle shift only bounds right", command = self.only_shift_bounds)
         
         btn_autocalibrate.pack()
         btn_button_save.pack()
         btn_ignore_orders.pack()
+        btn_only_shift_bounds.pack()
+        
+       
         
         # Program controlling buttons
         ######################################
@@ -857,7 +874,7 @@ class calibration_window():
         # If there's data from file then use that, else use previous calibration data
         if not self.bounds_input_array is None:
             
-            self.first_order_nr = int(self.bounds_input_array[:, 0].min()) # assumes that input file has correct data
+            self.first_order_nr = int(self.bounds_input_array[:, 0].min()) # assumes that input file has correct data #TODO: v3 check
             self.input_order_var.set(str(self.first_order_nr))
             
             self.compile_static_data_from_file()
@@ -890,7 +907,7 @@ class calibration_window():
     # (Re)initializes static calibration data (order nrs and bounds). 
     # Writes into self.calib_data_static only the data that's relevant to drawn orders.
     # When first order nr or number of drawn orders is changed then this is called again.
-    def compile_static_data_from_file(self):
+    def compile_static_data_from_file(self): # TODO: v3 check
         # reset the list, only to contain static data that is relevant for drawn orders
         self.calib_data_static = []
         
@@ -930,13 +947,16 @@ class calibration_window():
             
             
             static_class_instance = static_calibration_data()
+            static_class_instance.order_nr = order_nr
+            
             px_start = input_array[row_idx, 1]
             px_end = input_array[row_idx, 2]
+            static_class_instance.bounds_px = [px_start, px_end]
+            static_class_instance.bounds_px_original = [px_start, px_end]
             
             # Initialize self.first_order_nr
             if (self.first_order_nr is None) or (order_nr < self.first_order_nr):
                 self.first_order_nr = order_nr
-            
             
             # File contains info about wavelengths
             if input_array.shape[1] > 3:
@@ -946,15 +966,20 @@ class calibration_window():
                 static_class_instance.bounds_wave = [wave_start, wave_end]
                 static_class_instance.bounds_wave_original = [wave_start, wave_end]
             
+            
             # If you're viewing the code then you can disable the exception throwing, it's here
             # because ordinary user shouldn't use the program without input wavelengths.
             else:
                 self.set_feedback('_Vertical_points.csv must contain wavelength columns', 15000)
                 raise Exception('_Vertical_points.csv doesn\'t contain wavelength columns')
             
-            static_class_instance.order_nr = order_nr
-            static_class_instance.bounds_px = [px_start, px_end]
-            static_class_instance.bounds_px_original = [px_start, px_end]
+            # File contains also info about middle points
+            if input_array.shape[1] > 5:
+                px_middle = input_array[row_idx, 5]
+                wave_middle = input_array[row_idx, 6]
+                static_class_instance.bounds_middle = [px_middle, wave_middle]
+                static_class_instance.bounds_middle_orig = [px_middle, wave_middle]
+            
             
             self.calib_data_static.append(static_class_instance)
         
@@ -976,6 +1001,8 @@ class calibration_window():
                 static_class_instance.bounds_px_original = last_order.bounds_px_original
                 static_class_instance.bounds_wave = last_order.bounds_wave
                 static_class_instance.bounds_wave_original = last_order.bounds_wave_original
+                static_class_instance.bounds_middle = last_order.bounds_middle
+                static_class_instance.bounds_middle_original = last_order.bounds_middle_original
                 self.calib_data_static.append(static_class_instance)
         
         # In case there has been a shift, recalculate shifted bounds from original bounds
@@ -992,8 +1019,6 @@ class calibration_window():
         
         # Iterate over orders
         for order_idx, order in enumerate(self.calib_data_dynamic):
-            if self.ignore_top_orders and self.if_needs_cutting(order_idx):
-                continue # TODO for v3: change when implementing edge cutting
             
             points_array = order.save_decode()
             save_dict['dynamic'].append(points_array)
@@ -1052,7 +1077,7 @@ class calibration_window():
         if (self.first_order_nr != first_order_nr):
             
             # Check that the entered value isn't too small
-            file_first_order_nr = int(self.bounds_input_array[:, 0].min())
+            file_first_order_nr = int(self.bounds_input_array[:, 0].min()) # TODO: v3 check
             if first_order_nr >= file_first_order_nr:
                 self.first_order_nr = first_order_nr
                 self.compile_static_data_from_file()
@@ -1220,14 +1245,20 @@ class calibration_window():
         self.set_feedback('Ignore out of bounds orders: ' + str(self.ignore_top_orders))
     
     
+    # Toggles whether horizontal shift moves only bound points or also order curve points
+    def only_shift_bounds(self):
+        self.shift_only_bounds_right = not self.shift_only_bounds_right
+        self.set_feedback('Only shift bounds right (vs curves): ' + str(self.shift_only_bounds_right))
+    
+    
     # Reset program mode
     def reset_mode(self, button_call = True):
         
         # Reset selected order color
-        self.update_one_order_curve(self.best_order_idx, single_call = True, recalculate = False, set_color = 'red')
+        self.update_one_order_curve_color(self.selected_order_idx, set_color = 'r')
         
         self.program_mode = None
-        self.best_order_idx = None
+        self.selected_order_idx = None
         self.selected_order_nr = None
         self.curve_edit_mode = False
         
@@ -1307,8 +1338,8 @@ class calibration_window():
                     file.write(',' + str(coef))
                 
                 file.write('\n')
-        
-        
+    
+    
     # Write the three points x and y coordinates for each order to extra file
     def output_order_points(self):
         with open(output_path + '_Order_points.csv', 'w') as file:
@@ -1329,18 +1360,17 @@ class calibration_window():
     def output_spectrum(self):
         #x_data = self.spectrum_ax.get_xdata()
         #y_data = self.spectrum_ax.get_ydata()
-        x_values, z_values, order_nrs = self.get_order_spectrum()
+        x_values, z_values, order_nrs = self.get_spectrum_full()
         data = np.column_stack((x_values, z_values, order_nrs))
         np.savetxt(output_path + '_Spectrum.csv', data, fmt = '%.8e', delimiter = ',', comments = '', header = 'Wavelength (nm),Intensity,Order nr')
         
-            
     
     
     # Overwrite the order points with the ones calculated from polynomials
     def orders_tidy(self):
-        start_x = 25
+        start_x = 35
         center_x = math.floor(self.photo_array.shape[0] / 2)
-        end_x = self.photo_array.shape[0] - 25
+        end_x = self.photo_array.shape[0] - 35
         
         for idx in range(len(self.calib_data_dynamic)):
             order = self.calib_data_dynamic[idx]
@@ -1367,7 +1397,7 @@ class calibration_window():
         # Recompile self.calib_data_static with relevant data
         self.compile_static_data_from_file()
         # Calculate the bounds for that order
-        #self.initialize_bounds(self.best_order_idx)
+        #self.initialize_bounds(self.selected_order_idx)
         
         self.plot_order(diffr_order, color = 'white')
         
@@ -1375,10 +1405,10 @@ class calibration_window():
         #self.calib_data_dynamic.sort(key=lambda x: x.avg_y, reverse=True)
         
         self.selected_order_nr = diffr_order
-        self.best_order_idx = len(self.calib_data_dynamic) - 1
+        self.selected_order_idx = len(self.calib_data_dynamic) - 1
         
         
-        self.draw_bounds(self.best_order_idx)
+        self.draw_bounds(self.selected_order_idx)
         
         self.sort_orders()
         
@@ -1400,7 +1430,7 @@ class calibration_window():
     
     def delete_order(self):
         
-        if self.best_order_idx is None:
+        if self.selected_order_idx is None:
             self.set_feedback('No order selected', 8000)
             return
         
@@ -1408,7 +1438,7 @@ class calibration_window():
         self.show_orders = True
         self.hide_unhide_orders()
         
-        selected_idx = self.best_order_idx
+        selected_idx = self.selected_order_idx
         order_nr = self.calib_data_static[selected_idx].order_nr
         
         del self.calib_data_dynamic[selected_idx]
@@ -1418,7 +1448,7 @@ class calibration_window():
         
         # Deselect the order
         self.selected_order_nr = None
-        self.best_order_idx = None
+        self.selected_order_idx = None
         
         # Draw plots again
         self.initialize_plot(do_reset = True)
@@ -1566,23 +1596,23 @@ class calibration_window():
                     min_distance = distance
         
         # Deselect
-        if self.best_order_idx == best_order_idx:
+        if self.selected_order_idx == best_order_idx:
             
-            self.best_order_idx = None
+            self.selected_order_idx = None
             self.selected_order_nr = None
             
-            self.update_one_order_curve(best_order_idx, single_call = True, recalculate = False, set_color = 'red')
+            self.update_one_order_curve_color(best_order_idx, set_color = 'r')
             self.set_feedback('Order ' + str(best_order_idx + self.first_order_nr) + ' deselected')
         
         # Select
         else:
             # paint last selection red
-            self.update_one_order_curve(self.best_order_idx, single_call = True, recalculate = False, set_color = 'red')
+            self.update_one_order_curve_color(self.selected_order_idx, set_color = 'r')
             
-            self.best_order_idx = best_order_idx
+            self.selected_order_idx = best_order_idx
             self.selected_order_nr = self.calib_data_static[best_order_idx].order_nr
             
-            self.update_one_order_curve(best_order_idx, single_call = True, recalculate = False, set_color = 'white')
+            self.update_one_order_curve_color(best_order_idx, set_color = 'white')
             self.set_feedback('Order ' + str(best_order_idx + self.first_order_nr) + ' selected')
     
     
@@ -1595,7 +1625,7 @@ class calibration_window():
         if not self.show_orders:
             return
         
-        order = self.calib_data_dynamic[self.best_order_idx]
+        order = self.calib_data_dynamic[self.selected_order_idx]
         
         # Iterate over points of the selected orded
         min_distance = math.inf
@@ -1610,15 +1640,15 @@ class calibration_window():
         
         # edit point
         click_point.group = best_point.group
-        self.calib_data_dynamic[self.best_order_idx].points[best_point_idx] = click_point # TODO: delete hack 
-        self.calib_data_dynamic[self.best_order_idx].update()
+        self.calib_data_dynamic[self.selected_order_idx].points[best_point_idx] = click_point # TODO: delete hack 
+        self.calib_data_dynamic[self.selected_order_idx].update()
         
         
         # sort orders by average y values, this might change order nrs
         self.sort_orders()
         
         # Calculate the bounds for that order
-        self.recalculate_bounds(self.best_order_idx)
+        self.recalculate_bounds(self.selected_order_idx)
         
         # TODO: update only the selected order and all bounds
         self.update_order_curves()
@@ -1658,11 +1688,12 @@ class calibration_window():
         self.total_shift_right += shift_amount
         
         for order_idx in range(len(self.calib_data_dynamic)):
-            order = self.calib_data_dynamic[order_idx]
             
-            # shift order points
-            for point in order.points:
-                point.x += shift_amount # shift right
+            if not self.shift_only_bounds_right:
+                # shift order points
+                order = self.calib_data_dynamic[order_idx]
+                for point in order.points:
+                    point.x += shift_amount # shift right
             
             self.recalculate_bounds(order_idx, last_shift = shift_amount)
             
@@ -1677,25 +1708,40 @@ class calibration_window():
             self.update_spectrum(autoscale = True)
     
     
-    def recalculate_bounds(self, order_idx, last_shift = 0):
+    def recalculate_bounds(self, order_idx, last_shift = 0): # TODO for v3: check middle px and wl calculations
         
         # Short-circuit the function if there's no need to properly calculate stuff again
         if (self.total_shift_right == 0) and (last_shift == 0):
             return self.calib_data_static[order_idx].bounds_px
         
-        # shift order bounds
+        
+        # shift order bounds (pixels)
         [orig_px_left, orig_px_right] = self.calib_data_static[order_idx].bounds_px_original
         left_px = clip(orig_px_left + self.total_shift_right, 0, self.photo_array.shape[0] - 1)
         right_px = clip(orig_px_right + self.total_shift_right, 0, self.photo_array.shape[0] - 1)
-        self.calib_data_static[order_idx].bounds_px = [left_px, right_px]
         
+        [orig_px_middle, orig_wave_middle] = self.calib_data_static[order_idx].bounds_middle_orig
+        [px_middle, wave_middle] = self.calib_data_static[order_idx].bounds_middle
+        
+        if not px_middle is None:
+            px_middle = clip(orig_px_middle + self.total_shift_right, 0, self.photo_array.shape[0] - 1)
+        
+        # Shift wavelengths. Under normal conditions this isn't done because wavelenghts should be locked to the bounds.
         # If self.shift_wavelengths == True then wavelengths are locked to order curves, otherwise to pixels on image
         if not self.shift_wavelengths:
             [orig_wave_left, orig_wave_right] = self.calib_data_static[order_idx].bounds_wave_original
             
+            # TODO: wavelength changes according to quadratic fn
             left_wave = linear_regression(left_px, orig_px_left, orig_px_right, orig_wave_left, orig_wave_right)
             right_wave = linear_regression(right_px, orig_px_left, orig_px_right, orig_wave_left, orig_wave_right)
             self.calib_data_static[order_idx].bounds_wave = [left_wave, right_wave]
+            
+            if not wave_middle is None:
+                wave_middle = linear_regression(px_middle, orig_px_left, orig_px_middle, orig_wave_left, orig_wave_middle)
+        
+        # overwrite previous values
+        self.calib_data_static[order_idx].bounds_px = [left_px, right_px]
+        self.calib_data_static[order_idx].bounds_middle = [px_middle, wave_middle]
         
         return [left_px, right_px]
     
@@ -1739,6 +1785,9 @@ class calibration_window():
         
         # TODO: fix bounds not being drawn initially (because self.calculate_bounds assumes plotted curves)
         self.update_order_curves()
+        
+        # Disable orders that are too close to the top edge
+        self.check_top_orders_proximity()
         
         # Compile spectrum from diffraction orders and the bounds
         self.draw_spectrum()
@@ -1855,7 +1904,7 @@ class calibration_window():
         self.spectrum_ax = self.spectrum_fig.gca()
         
         # Plot curve
-        x_values, z_values, order_nrs = self.get_order_spectrum()
+        x_values, z_values, order_nrs = self.get_spectrum_full()
         self.spectrum_curve, = self.spectrum_ax.plot(x_values, z_values, 'tab:pink')
         
         # rescale to fit
@@ -1884,7 +1933,7 @@ class calibration_window():
     def update_all(self):
         
         # Deselect order
-        self.best_order_idx = None
+        self.selected_order_idx = None
         
         self.update_point_instances()
         
@@ -1895,7 +1944,9 @@ class calibration_window():
         
         
         self.calculate_all_bounds(initialize_x = True)
-            
+        
+        # Disable orders that are too close to the top edge
+        self.check_top_orders_proximity()
         
         self.update_spectrum(autoscale = True)
         
@@ -1929,6 +1980,19 @@ class calibration_window():
         # Draw plot again and wait for drawing to finish
         self.canvas.draw()
         self.canvas.flush_events() 
+    
+    def update_one_order_curve_color(self, order_idx, single_call = True, set_color = 'r'):
+        if order_idx is None:
+            return
+        
+        if self.order_plot_curves[order_idx].get_color() == set_color:
+            return
+        
+        # Change color and redraw
+        self.order_plot_curves[order_idx].set_color(set_color)
+        self.canvas.draw()
+        self.canvas.flush_events() 
+        
     
     def update_one_order_curve(self, order_idx, single_call = False, recalculate = True, set_color = None):
         
@@ -1971,22 +2035,24 @@ class calibration_window():
         self.order_bound_points[order_idx].set_ydata([y_start, y_end])
         
     
-    def update_spectrum(self, autoscale = False):
-         
-         x_values, z_values, order_nrs = self.get_order_spectrum()
-         
-         # Plot curve
-         self.spectrum_curve.set_xdata(x_values)
-         self.spectrum_curve.set_ydata(z_values)
-         
-         # rescale to fit
-         if self.autoscale_spectrum and autoscale:
-             self.spectrum_ax.set_xlim(min(x_values), max(x_values))
-             self.spectrum_ax.set_ylim(min(z_values), max(z_values))
-         
-         # Draw plot again and wait for drawing to finish
-         self.canvas_spectrum.draw()
-         self.canvas_spectrum.flush_events() 
+    def update_spectrum(self, autoscale = False, force_scale = False):
+        if self.spectrum_curve is None:
+            return
+        
+        x_values, z_values, order_nrs = self.get_spectrum_full()
+        
+        # Plot curve
+        self.spectrum_curve.set_xdata(x_values)
+        self.spectrum_curve.set_ydata(z_values)
+        
+        # rescale to fit
+        if force_scale or (self.autoscale_spectrum and autoscale):
+            self.spectrum_ax.set_xlim(min(x_values), max(x_values))
+            self.spectrum_ax.set_ylim(min(z_values), max(z_values))
+        
+        # Draw plot again and wait for drawing to finish
+        self.canvas_spectrum.draw()
+        self.canvas_spectrum.flush_events() 
     
     def hide_unhide_orders(self):
         
@@ -2118,8 +2184,8 @@ class calibration_window():
         #    self.calib_data_dynamic[idx].order_nr = idx + self.first_order_nr
             
         # Re-select the correct order
-        idxs = np.where(sorted_idx == self.best_order_idx)[0] # get indices of rows where idx is the same, can be None
-        self.best_order_idx = None if len(idxs) == 0 else idxs[0]
+        idxs = np.where(sorted_idx == self.selected_order_idx)[0] # get indices of rows where idx is the same, can be None
+        self.selected_order_idx = None if len(idxs) == 0 else idxs[0]
         
         
         #self.reinitialize_orders() # TODO
@@ -2127,18 +2193,23 @@ class calibration_window():
     
    
     # Get z-values of corresponding x and y values and cut them according to left and right bounds
-    def get_order_spectrum(self):
+    def get_spectrum_full(self):
         x_values = None
         z_values = []
         order_nrs = []
         
         
         nr_pixels = self.photo_array.shape[0]
-        photo_pixels = np.arange(nr_pixels)
+        #photo_pixels = np.arange(nr_pixels)
         
         # Compile z-data from the photo with all diffraction orders
         # Iterate over orders backwards because they are sorted by order nr (top to bottom)
         for order_idx in range(len(self.calib_data_dynamic) - 1, -1, -1):
+            
+            # Skip calculation for orders too close to the edge
+            if not self.calib_data_static[order_idx].use_order:
+                continue
+            
             order_nr = self.calib_data_static[order_idx].order_nr
             
             #curve_x = photo_pixels
@@ -2203,7 +2274,7 @@ class calibration_window():
                     center = self.calib_data_dynamic[order_idx].avg_y
                     if order_idx > 0: # check for out of bounds error
                         low = self.calib_data_dynamic[order_idx - 1].avg_y
-                        width = (center - low) / 2
+                        width = (center - low) / 2 # TODO: remove division (0.5 is radius)
                     elif len(self.calib_data_dynamic) > order_idx + 1: # check for out of bounds error
                         high = self.calib_data_dynamic[order_idx + 1].avg_y
                         width = (high - center) / 2
@@ -2222,42 +2293,69 @@ class calibration_window():
         return x_values, z_values, order_nrs
     
     
-
+    def get_spectrum_order(self, order_idx):
+        pass    
+    
+    # Calculates the wavelength of a pixel on a given order with either linear or quadratic function.
+    # Prefers quadratic function if bounds data has three points.
     def get_wavelength(self, order_idx, x_px):
         
         # Take bounds from (latest aka shifted) order points class
         [px_start, px_end] = self.calib_data_static[order_idx].bounds_px
         [wave_start, wave_end] = self.calib_data_static[order_idx].bounds_wave
+        [px_middle, wave_middle] = self.calib_data_static[order_idx].bounds_middle
         
         # Do linear regression and find the wavelength of x_px
-        wavelength = linear_regression(x_px, px_start, px_end, wave_start, wave_end)
+        if (px_middle is None) or (wave_middle is None):
+            wavelength = linear_regression(x_px, px_start, px_end, wave_start, wave_end)
+        
+        # Use quadratic fn
+        else:
+            wavelength = quadratic_regression(x_px, [px_start, px_middle, px_end], [wave_start, wave_middle, wave_end])
+        
         return wavelength
     
     # Check if top orders are too close to the edge and if so then don't use these
     def check_top_orders_proximity(self):
+        something_changed = False
         
         max_idx = min(20 + 1, len(self.calib_data_dynamic)) # no point in checking all orders (ignore bottom)
         for order_idx in range(max_idx):
             
             if self.ignore_top_orders and self.if_needs_cutting(order_idx):
+                if self.calib_data_static[order_idx].use_order:
+                    something_changed = True 
+                
                 self.calib_data_static[order_idx].use_order = False
+                color = 'tab:gray'
             else:
+                if not self.calib_data_static[order_idx].use_order:
+                    something_changed = True 
+                
                 self.calib_data_static[order_idx].use_order = True
+                color = 'white' if order_idx == self.selected_order_idx else 'r'
+                
+            self.update_one_order_curve_color(order_idx, set_color = color)
+            
+            if something_changed:
+                self.update_spectrum(force_scale = True)
+                
             
             # TODO for v3: think through the cases of different length input bounds and 
             # implement edge cutting
     
     # Check if order is too close to top edge of image
     def if_needs_cutting(self, order_idx):
+        
         # Get topmost point's y-coordinate
         top = min(self.calib_data_dynamic[order_idx].ylist) # min because coordinate increases towards bottom
         if order_idx >= len(self.calib_data_dynamic) - 1: # last order (bottom)
             second = min(self.calib_data_dynamic[order_idx - 1].ylist)
         else: # take next order
             second = min(self.calib_data_dynamic[order_idx + 1].ylist)
-        dy = abs(second - top)
         
         # If pixel value is lower because of image clipping then the order needs to be cut
+        dy = abs(second - top)
         if top < dy / 2:
             return True
         else:
@@ -2288,6 +2386,12 @@ def linear_regression(x, x_start, x_end, y_start, y_end):
     intercept = y_start - slope * x_start
     
     y = x * slope + intercept
+    return y
+
+# Calculate quadratic fn and then fint the value of y at x
+def quadratic_regression(x, x_values, y_values):
+    poly_coefs = np.polynomial.polynomial.polyfit(x_values, y_values, 2)
+    y = poly_coefs[2] * x ** 2 + poly_coefs[1] * x + poly_coefs[0]
     return y
 
 # Sum pixels around the order
@@ -2395,83 +2499,6 @@ def get_polynomial_points(order, arr_length, flip = False):
     curve_array = np.clip(curve_array, 0, arr_length - 1)
     
     return curve_array, poly_coefs
-
-def draw_pyplot(photo_array, root_fig = None, identificator = ''):
-    #%matplotlib
-    
-    if root_fig is None:
-        fig = plt.figure(figsize=[10,5])
-    else:
-        fig = root_fig
-    
-    
-    #plt.plot(photo_array)
-    
-    #plt.imshow( photo_array )
-    plt.title(identificator)
-    
-    #img = plt.imshow(photo_array, norm = 'log')
-    
-    # Initializes figure   
-    #fig = plt.figure(figsize=[10,5])
-    #ax = fig.add_subplot(1,1,1)
-    
-    
-    
-   
-    
-    #heatmap=ax.contourf(photo_array)
-    #plt.imshow(photo_array, cmap='hot', interpolation='nearest')
-    
-#    handle, = ax.plot(data = photo_array)
-    #handles.append(handle)
-    
-    #cbar.ax.set_yscale('log')
-    
-    ax = plt.gca
-    
-    # Defining the cursor
-    # cursor = Cursor(ax, horizOn=True, vertOn=True, useblit=True,
-    #                 color = 'r', linewidth = 1)
-    
-    
-    
-    # Add colorbar 
-    #cbar = plt.colorbar()
-    #cbar.ax.set_yscale('log')
-    
-    #fig = plt.gcf
-    
-    #plt.ion
-    
-    #fig.canvas.mpl_connect('button_press_event', onclick)
-    
-    #plt.show()
-
-
-def onclick(event):
-    #global coord
-    #coord.append((event.xdata, event.ydata))
-    x = event.xdata
-    y = event.ydata
-    z = event.zdata[0]
-    
-    fig = plt.gcf
-    ax = plt.gca
-    # Creating an annotating box
-    annot = ax.annotate("", xy=(0,0), xytext=(-40,40),textcoords="offset points",
-                       bbox=dict(boxstyle='round4', fc='linen',ec='k',lw=1),
-                       arrowprops=dict(arrowstyle='-|>'))
-    annot.set_visible(False) 
-   
-    # printing the values of the selected point
-    #print([x,y]) 
-    annot.xy = (x,y)
-    #text = "({:.2g}, {:.2g})".format(x,y)
-    annot.set_text(str(x) + '\n' + str(y) + '\n' + str(z))
-    annot.set_visible(True)
-    fig.canvas.draw() #redraw the figure
-
 
     
 
@@ -2654,6 +2681,268 @@ if dbg:
     calibration_window = count_calls(calibration_window)
         
 
+
+##############################################################################################################
+# Vertical bounds and wavelengths data
+##############################################################################################################
+
+# This is a constant array in .aryx files (in aif subfile in aryx compressed file).
+# The array is extracted with the code from 
+# https://gitlab.com/ltb_berlin/ltb_files and
+# https://ltb_berlin.gitlab.io/ltb_files/ltbfiles.html
+
+'''
+# The data encoding in aif file is the following
+AIF_DTYPE_ARYX = numpy.dtype([('indLow', numpy.int32),
+                      ('indHigh', numpy.int32),
+                      ('order', numpy.int16),
+                      ('lowPix', numpy.int16),
+                      ('highPix', numpy.int16),
+                      ('foo', numpy.int16),
+                      ('lowWave', numpy.float64),
+                      ('highWave', numpy.float64)]) 
+'''
+
+# The data is extracted from sample 492 (JET experiment). The data is constant throughout the experiments.
+# Only the smallest order nr row is cut from e.g. 2024.08.12 calibration day spectra because the order was
+# too close to the image edge.
+# spectrum start px (unsorted),spectrum end px (unsorted),order nr,image start px,image end px,nothing,start wavelength (nm),end wavelength (nm)
+extracted_orders_info = np.array([
+    [3.93010e+04,4.03060e+04,3.50000e+01,1.80000e+01,1.02300e+03,0.00000e+00,7.44703e+02,7.70245e+02],
+    [3.84620e+04,3.93000e+04,3.60000e+01,1.40000e+01,8.52000e+02,0.00000e+00,7.23898e+02,7.44688e+02],
+    [3.76480e+04,3.84610e+04,3.70000e+01,1.10000e+01,8.24000e+02,0.00000e+00,7.04251e+02,7.23884e+02],
+    [3.68610e+04,3.76470e+04,3.80000e+01,1.30000e+01,7.99000e+02,0.00000e+00,6.85764e+02,7.04251e+02],
+    [3.61020e+04,3.68600e+04,3.90000e+01,2.10000e+01,7.79000e+02,0.00000e+00,6.68368e+02,6.85742e+02],
+    [3.55460e+04,3.61010e+04,4.00000e+01,2.13000e+02,7.68000e+02,0.00000e+00,6.56016e+02,6.68358e+02],
+    [3.46510e+04,3.55450e+04,4.10000e+01,6.00000e+01,9.54000e+02,0.00000e+00,6.36635e+02,6.56012e+02],
+    [3.39480e+04,3.46500e+04,4.20000e+01,7.00000e+01,7.72000e+02,0.00000e+00,6.21695e+02,6.36618e+02],
+    [3.32820e+04,3.39470e+04,4.30000e+01,1.01000e+02,7.66000e+02,0.00000e+00,6.07893e+02,6.21693e+02],
+    [3.26010e+04,3.32810e+04,4.40000e+01,1.02000e+02,7.82000e+02,0.00000e+00,5.94098e+02,6.07883e+02],
+    [3.19800e+04,3.26000e+04,4.50000e+01,1.47000e+02,7.67000e+02,0.00000e+00,5.81803e+02,5.94083e+02],
+    [3.12880e+04,3.19790e+04,4.60000e+01,1.09000e+02,8.00000e+02,0.00000e+00,5.68405e+02,5.81796e+02],
+    [3.06560e+04,3.12870e+04,4.70000e+01,1.14000e+02,7.45000e+02,0.00000e+00,5.56406e+02,5.68391e+02],
+    [3.00590e+04,3.06550e+04,4.80000e+01,1.41000e+02,7.37000e+02,0.00000e+00,5.45322e+02,5.56401e+02],
+    [2.94670e+04,3.00580e+04,4.90000e+01,1.61000e+02,7.52000e+02,0.00000e+00,5.34560e+02,5.45312e+02],
+    [2.88720e+04,2.94660e+04,5.00000e+01,1.66000e+02,7.60000e+02,0.00000e+00,5.23956e+02,5.34544e+02],
+    [2.83010e+04,2.88710e+04,5.10000e+01,1.83000e+02,7.53000e+02,0.00000e+00,5.13981e+02,5.23939e+02],
+    [2.77320e+04,2.83000e+04,5.20000e+01,1.92000e+02,7.60000e+02,0.00000e+00,5.04250e+02,5.13978e+02],
+    [2.71860e+04,2.77310e+04,5.30000e+01,2.13000e+02,7.58000e+02,0.00000e+00,4.95090e+02,5.04244e+02],
+    [2.66410e+04,2.71850e+04,5.40000e+01,2.25000e+02,7.69000e+02,0.00000e+00,4.86119e+02,4.95081e+02],
+    [2.60540e+04,2.66400e+04,5.50000e+01,1.85000e+02,7.71000e+02,0.00000e+00,4.76619e+02,4.86108e+02],
+    [2.55350e+04,2.60530e+04,5.60000e+01,2.01000e+02,7.19000e+02,0.00000e+00,4.68363e+02,4.76609e+02],
+    [2.50200e+04,2.55340e+04,5.70000e+01,2.12000e+02,7.26000e+02,0.00000e+00,4.60317e+02,4.68352e+02],
+    [2.44880e+04,2.50190e+04,5.80000e+01,1.97000e+02,7.28000e+02,0.00000e+00,4.52143e+02,4.60303e+02],
+    [2.39870e+04,2.44870e+04,5.90000e+01,2.04000e+02,7.04000e+02,0.00000e+00,4.44584e+02,4.52141e+02],
+    [2.35030e+04,2.39860e+04,6.00000e+01,2.19000e+02,7.02000e+02,0.00000e+00,4.37396e+02,4.44572e+02],
+    [2.30130e+04,2.35020e+04,6.10000e+01,2.21000e+02,7.10000e+02,0.00000e+00,4.30253e+02,4.37396e+02],
+    [2.25440e+04,2.30120e+04,6.20000e+01,2.35000e+02,7.03000e+02,0.00000e+00,4.23514e+02,4.30239e+02],
+    [2.20560e+04,2.25430e+04,6.30000e+01,2.23000e+02,7.10000e+02,0.00000e+00,4.16617e+02,4.23505e+02],
+    [2.15890e+04,2.20550e+04,6.40000e+01,2.24000e+02,6.90000e+02,0.00000e+00,4.10118e+02,4.16610e+02],
+    [2.11360e+04,2.15880e+04,6.50000e+01,2.32000e+02,6.84000e+02,0.00000e+00,4.03917e+02,4.10117e+02],
+    [2.06900e+04,2.11350e+04,6.60000e+01,2.40000e+02,6.85000e+02,0.00000e+00,3.97904e+02,4.03913e+02],
+    [2.02490e+04,2.06890e+04,6.70000e+01,2.46000e+02,6.86000e+02,0.00000e+00,3.92043e+02,3.97895e+02],
+    [1.98070e+04,2.02480e+04,6.80000e+01,2.45000e+02,6.86000e+02,0.00000e+00,3.86262e+02,3.92042e+02],
+    [1.93690e+04,1.98060e+04,6.90000e+01,2.41000e+02,6.78000e+02,0.00000e+00,3.80610e+02,3.86255e+02],
+    [1.89470e+04,1.93680e+04,7.00000e+01,2.47000e+02,6.68000e+02,0.00000e+00,3.75248e+02,3.80609e+02],
+    [1.85370e+04,1.89460e+04,7.10000e+01,2.59000e+02,6.68000e+02,0.00000e+00,3.70112e+02,3.75246e+02],
+    [1.81210e+04,1.85360e+04,7.20000e+01,2.59000e+02,6.74000e+02,0.00000e+00,3.64970e+02,3.70106e+02],
+    [1.77130e+04,1.81200e+04,7.30000e+01,2.61000e+02,6.68000e+02,0.00000e+00,3.59993e+02,3.64961e+02],
+    [1.73080e+04,1.77120e+04,7.40000e+01,2.61000e+02,6.65000e+02,0.00000e+00,3.55126e+02,3.59991e+02],
+    [1.69200e+04,1.73070e+04,7.50000e+01,2.72000e+02,6.59000e+02,0.00000e+00,3.50520e+02,3.55119e+02],
+    [1.65280e+04,1.69190e+04,7.60000e+01,2.74000e+02,6.65000e+02,0.00000e+00,3.45930e+02,3.50514e+02],
+    [1.61440e+04,1.65270e+04,7.70000e+01,2.79000e+02,6.62000e+02,0.00000e+00,3.41493e+02,3.45925e+02],
+    [1.57620e+04,1.61430e+04,7.80000e+01,2.81000e+02,6.62000e+02,0.00000e+00,3.37136e+02,3.41488e+02],
+    [1.53940e+04,1.57610e+04,7.90000e+01,2.92000e+02,6.59000e+02,0.00000e+00,3.32991e+02,3.37129e+02],
+    [1.50140e+04,1.53930e+04,8.00000e+01,2.87000e+02,6.66000e+02,0.00000e+00,3.28770e+02,3.32990e+02],
+    [1.46500e+04,1.50130e+04,8.10000e+01,2.93000e+02,6.56000e+02,0.00000e+00,3.24775e+02,3.28767e+02],
+    [1.43010e+04,1.46490e+04,8.20000e+01,3.09000e+02,6.57000e+02,0.00000e+00,3.20987e+02,3.24766e+02],
+    [1.39330e+04,1.43000e+04,8.30000e+01,3.02000e+02,6.69000e+02,0.00000e+00,3.17042e+02,3.20978e+02],
+    [1.35760e+04,1.39320e+04,8.40000e+01,3.02000e+02,6.58000e+02,0.00000e+00,3.13264e+02,3.17039e+02],
+    [1.32330e+04,1.35750e+04,8.50000e+01,3.11000e+02,6.53000e+02,0.00000e+00,3.09671e+02,3.13254e+02],
+    [1.28830e+04,1.32320e+04,8.60000e+01,3.10000e+02,6.59000e+02,0.00000e+00,3.06057e+02,3.09671e+02],
+    [1.25520e+04,1.28820e+04,8.70000e+01,3.23000e+02,6.53000e+02,0.00000e+00,3.02670e+02,3.06047e+02],
+    [1.22040e+04,1.25510e+04,8.80000e+01,3.16000e+02,6.63000e+02,0.00000e+00,2.99156e+02,3.02667e+02],
+    [1.18750e+04,1.22030e+04,8.90000e+01,3.24000e+02,6.52000e+02,0.00000e+00,2.95872e+02,2.99154e+02],
+    [1.15510e+04,1.18740e+04,9.00000e+01,3.33000e+02,6.56000e+02,0.00000e+00,2.92671e+02,2.95866e+02],
+    [1.12200e+04,1.15500e+04,9.10000e+01,3.32000e+02,6.62000e+02,0.00000e+00,2.89441e+02,2.92669e+02],
+    [1.08900e+04,1.12190e+04,9.20000e+01,3.28000e+02,6.57000e+02,0.00000e+00,2.86252e+02,2.89436e+02],
+    [1.05720e+04,1.08890e+04,9.30000e+01,3.32000e+02,6.49000e+02,0.00000e+00,2.83209e+02,2.86244e+02],
+    [1.02530e+04,1.05710e+04,9.40000e+01,3.32000e+02,6.50000e+02,0.00000e+00,2.80192e+02,2.83205e+02],
+    [9.95300e+03,1.02520e+04,9.50000e+01,3.48000e+02,6.47000e+02,0.00000e+00,2.77390e+02,2.80192e+02],
+    [9.64200e+03,9.95200e+03,9.60000e+01,3.50000e+02,6.60000e+02,0.00000e+00,2.74515e+02,2.77388e+02],
+    [9.32900e+03,9.64100e+03,9.70000e+01,3.46000e+02,6.58000e+02,0.00000e+00,2.71643e+02,2.74506e+02],
+    [9.02700e+03,9.32800e+03,9.80000e+01,3.50000e+02,6.51000e+02,0.00000e+00,2.68903e+02,2.71638e+02],
+    [8.72300e+03,9.02600e+03,9.90000e+01,3.49000e+02,6.52000e+02,0.00000e+00,2.66173e+02,2.68898e+02],
+    [8.42700e+03,8.72200e+03,1.00000e+02,3.53000e+02,6.48000e+02,0.00000e+00,2.63542e+02,2.66169e+02],
+    [8.12800e+03,8.42600e+03,1.01000e+02,3.51000e+02,6.49000e+02,0.00000e+00,2.60910e+02,2.63538e+02],
+    [7.83700e+03,8.12700e+03,1.02000e+02,3.54000e+02,6.44000e+02,0.00000e+00,2.58374e+02,2.60906e+02],
+    [7.55100e+03,7.83600e+03,1.03000e+02,3.59000e+02,6.44000e+02,0.00000e+00,2.55903e+02,2.58368e+02],
+    [7.26400e+03,7.55000e+03,1.04000e+02,3.60000e+02,6.46000e+02,0.00000e+00,2.53446e+02,2.55895e+02],
+    [6.98200e+03,7.26300e+03,1.05000e+02,3.64000e+02,6.45000e+02,0.00000e+00,2.51061e+02,2.53444e+02],
+    [6.70500e+03,6.98100e+03,1.06000e+02,3.70000e+02,6.46000e+02,0.00000e+00,2.48737e+02,2.51056e+02],
+    [6.42900e+03,6.70400e+03,1.07000e+02,3.75000e+02,6.50000e+02,0.00000e+00,2.46449e+02,2.48737e+02],
+    [6.14500e+03,6.42800e+03,1.08000e+02,3.69000e+02,6.52000e+02,0.00000e+00,2.44111e+02,2.46444e+02],
+    [5.87100e+03,6.14400e+03,1.09000e+02,3.70000e+02,6.43000e+02,0.00000e+00,2.41874e+02,2.44105e+02],
+    [5.59600e+03,5.87000e+03,1.10000e+02,3.68000e+02,6.42000e+02,0.00000e+00,2.39652e+02,2.41871e+02],
+    [5.33100e+03,5.59500e+03,1.11000e+02,3.73000e+02,6.37000e+02,0.00000e+00,2.37527e+02,2.39646e+02],
+    [5.07200e+03,5.33000e+03,1.12000e+02,3.82000e+02,6.40000e+02,0.00000e+00,2.35472e+02,2.37524e+02],
+    [4.81200e+03,5.07100e+03,1.13000e+02,3.88000e+02,6.47000e+02,0.00000e+00,2.33429e+02,2.35470e+02],
+    [4.54800e+03,4.81100e+03,1.14000e+02,3.87000e+02,6.50000e+02,0.00000e+00,2.31367e+02,2.33421e+02],
+    [4.28700e+03,4.54700e+03,1.15000e+02,3.87000e+02,6.47000e+02,0.00000e+00,2.29348e+02,2.31362e+02],
+    [4.03300e+03,4.28600e+03,1.16000e+02,3.92000e+02,6.45000e+02,0.00000e+00,2.27403e+02,2.29345e+02],
+    [3.78200e+03,4.03200e+03,1.17000e+02,3.98000e+02,6.48000e+02,0.00000e+00,2.25498e+02,2.27401e+02],
+    [3.52100e+03,3.78100e+03,1.18000e+02,3.92000e+02,6.52000e+02,0.00000e+00,2.23534e+02,2.25497e+02],
+    [3.28400e+03,3.52000e+03,1.19000e+02,4.07000e+02,6.43000e+02,0.00000e+00,2.21761e+02,2.23528e+02],
+    [3.02500e+03,3.28300e+03,1.20000e+02,3.99000e+02,6.57000e+02,0.00000e+00,2.19846e+02,2.21761e+02],
+    [2.77700e+03,3.02400e+03,1.21000e+02,3.99000e+02,6.46000e+02,0.00000e+00,2.18022e+02,2.19840e+02],
+    [2.53900e+03,2.77600e+03,1.22000e+02,4.07000e+02,6.44000e+02,0.00000e+00,2.16286e+02,2.18016e+02],
+    [2.29000e+03,2.53800e+03,1.23000e+02,4.02000e+02,6.50000e+02,0.00000e+00,2.14483e+02,2.16280e+02],
+    [2.05000e+03,2.28900e+03,1.24000e+02,4.04000e+02,6.43000e+02,0.00000e+00,2.12760e+02,2.14478e+02],
+    [1.81300e+03,2.04900e+03,1.25000e+02,4.07000e+02,6.43000e+02,0.00000e+00,2.11072e+02,2.12754e+02],
+    [1.57800e+03,1.81200e+03,1.26000e+02,4.10000e+02,6.44000e+02,0.00000e+00,2.09410e+02,2.11065e+02],
+    [1.34900e+03,1.57700e+03,1.27000e+02,4.18000e+02,6.46000e+02,0.00000e+00,2.07809e+02,2.09409e+02],
+    [1.09900e+03,1.34800e+03,1.28000e+02,4.03000e+02,6.52000e+02,0.00000e+00,2.06072e+02,2.07806e+02],
+    [8.93000e+02,1.09800e+03,1.29000e+02,4.30000e+02,6.35000e+02,0.00000e+00,2.04654e+02,2.06070e+02],
+    [7.02000e+02,8.92000e+02,1.30000e+02,4.71000e+02,6.61000e+02,0.00000e+00,2.03354e+02,2.04654e+02],
+    [0.00000e+00,7.01000e+02,1.31000e+02,0.00000e+00,7.01000e+02,0.00000e+00,1.98536e+02,2.03353e+02]
+])
+
+
+# This array is gained by fitting quadratic fn to every order in Sophi nXt output spectrum 
+# for sample 492 (perfect fit).
+#order_nr,a,b,c
+wavelength_calculation_coefficients = np.array([
+[35,-7.00E-07,0.026221,744.659717],
+[36,-6.76E-07,0.025487,723.968536],
+[37,-6.57E-07,0.024796,704.396709],
+[38,-6.40E-07,0.024142,685.855902],
+[39,-6.23E-07,0.023523,668.266578],
+[40,-6.12E-07,0.022938,651.55623],
+[41,-5.98E-07,0.022378,635.662755],
+[42,-5.80E-07,0.021842,620.52635],
+[43,-5.67E-07,0.021334,606.093614],
+[44,-5.54E-07,0.02085,592.317075],
+[45,-5.43E-07,0.020387,579.152704],
+[46,-5.31E-07,0.019944,566.560956],
+[47,-5.19E-07,0.019519,554.50497],
+[48,-5.08E-07,0.019113,542.95104],
+[49,-4.99E-07,0.018723,531.86857],
+[50,-4.89E-07,0.018349,521.229365],
+[51,-4.79E-07,0.01799,511.007244],
+[52,-4.71E-07,0.017645,501.178152],
+[53,-4.62E-07,0.017312,491.719804],
+[54,-4.54E-07,0.016992,482.611633],
+[55,-4.45E-07,0.016683,473.8348],
+[56,-4.36E-07,0.016385,465.37118],
+[57,-4.29E-07,0.016098,457.204276],
+[58,-4.22E-07,0.01582,449.318976],
+[59,-4.14E-07,0.015552,441.700825],
+[60,-4.07E-07,0.015294,434.336412],
+[61,-4.01E-07,0.015043,427.213362],
+[62,-3.95E-07,0.014801,420.319964],
+[63,-3.88E-07,0.014566,413.645358],
+[64,-3.82E-07,0.014339,407.179242],
+[65,-3.76E-07,0.014118,400.911928],
+[66,-3.71E-07,0.013905,394.83442],
+[67,-3.65E-07,0.013698,388.938243],
+[68,-3.60E-07,0.013496,383.215419],
+[69,-3.54E-07,0.013301,377.658416],
+[70,-3.49E-07,0.013111,372.260075],
+[71,-3.44E-07,0.012927,367.013682],
+[72,-3.40E-07,0.012747,361.912971],
+[73,-3.35E-07,0.012573,356.951954],
+[74,-3.31E-07,0.012403,352.124949],
+[75,-3.26E-07,0.012238,347.426573],
+[76,-3.22E-07,0.012077,342.851777],
+[77,-3.18E-07,0.01192,338.395757],
+[78,-3.14E-07,0.011768,334.053939],
+[79,-3.10E-07,0.011619,329.821965],
+[80,-3.06E-07,0.011474,325.695765],
+[81,-3.02E-07,0.011332,321.671399],
+[82,-2.99E-07,0.011195,317.74509],
+[83,-2.95E-07,0.01106,313.913386],
+[84,-2.92E-07,0.010928,310.172899],
+[85,-2.88E-07,0.0108,306.520343],
+[86,-2.85E-07,0.010674,302.952695],
+[87,-2.82E-07,0.010552,299.46701],
+[88,-2.79E-07,0.010432,296.06053],
+[89,-2.75E-07,0.010315,292.730567],
+[90,-2.72E-07,0.010201,289.474537],
+[91,-2.69E-07,0.010089,286.290057],
+[92,-2.66E-07,0.009979,283.174805],
+[93,-2.64E-07,0.009872,280.126503],
+[94,-2.61E-07,0.009767,277.143023],
+[95,-2.58E-07,0.009664,274.222291],
+[96,-2.56E-07,0.009564,271.362386],
+[97,-2.53E-07,0.009465,268.561468],
+[98,-2.50E-07,0.009369,265.817678],
+[99,-2.48E-07,0.009274,263.129291],
+[100,-2.45E-07,0.009182,260.494646],
+[101,-2.43E-07,0.009091,257.912157],
+[102,-2.40E-07,0.009002,255.380284],
+[103,-2.38E-07,0.008914,252.897539],
+[104,-2.36E-07,0.008829,250.462526],
+[105,-2.34E-07,0.008745,248.073874],
+[106,-2.32E-07,0.008662,245.730265],
+[107,-2.29E-07,0.008582,243.430441],
+[108,-2.27E-07,0.008502,241.173221],
+[109,-2.25E-07,0.008424,238.957405],
+[110,-2.23E-07,0.008348,236.781855],
+[111,-2.21E-07,0.008272,234.64548],
+[112,-2.19E-07,0.008199,232.547217],
+[113,-2.17E-07,0.008126,230.486076],
+[114,-2.15E-07,0.008055,228.461106],
+[115,-2.14E-07,0.007985,226.47135],
+[116,-2.12E-07,0.007916,224.515874],
+[117,-2.10E-07,0.007849,222.593802],
+[118,-2.08E-07,0.007782,220.704322],
+[119,-2.07E-07,0.007717,218.846563],
+[120,-2.05E-07,0.007653,217.019765],
+[121,-2.03E-07,0.00759,215.223181],
+[122,-2.01E-07,0.007527,213.456005],
+[123,-2.00E-07,0.007466,211.717568],
+[124,-1.98E-07,0.007406,210.007169],
+[125,-1.97E-07,0.007347,208.324113],
+[126,-1.95E-07,0.007289,206.667762],
+[127,-1.94E-07,0.007231,205.037474],
+[128,-1.92E-07,0.007175,203.432694],
+[129,-1.91E-07,0.007119,201.852738],
+[130,-1.90E-07,0.007065,200.296964],
+[131,-1.85E-07,0.007008,198.765832]
+])
+
+
+# TODO: detect and cut top order if close to edge like when _Vertical_points.csv doesn't have the line
+
+# order_nr, start px, end px, start wl, end wl, a, b, c
+orders_info = np.concatenate((extracted_orders_info[:, [2,3,4,6,7]], wavelength_calculation_coefficients[:,[1,2,3]]), axis=1)
+
+# These values are gained by analyzing the spectrum from Sophi nXt with sample 492.
+# Wavelengths of other spectra can be calculated with 1 pm accuracy with horizontal shift.
+def order_px_to_wavelength(order_nr, px, horizontal_shift = 0):
+    
+    # Each order and its wavelengths follow a quadratic fn y = a * x^2 + b * x + c
+    # px in the equation is the image px, not order px. Px is from 0 to 1023 and bounds don't matter.
+    # These coefficients in turn follow a very strong (smallest R^2 was 0.99997) linear (division) curve.
+    #a = -0.0000243121 / order_nr - 0.0000000022
+    #b = 0.9169981497 / order_nr + 0.0000110699
+    #c = 26072.6114478297 / order_nr - 0.2305172110
+    
+    # get index of row where order_nr is the same
+    idxs = np.where(order_nr == orders_info[:,0])[0]
+    if len(idxs) == 0: 
+        print('ERROR: order_px_to_wavelength() | no match for order ' + str(order_nr))
+        return
+    else: 
+        idx = idxs[0]
+    
+    # The direct polynomial coefficients still give more accurate result than a,b,c functions.
+    a = orders_info[idx, 5]
+    b = orders_info[idx, 6]
+    c = orders_info[idx, 7]
+    
+    px += horizontal_shift # TODO: check shift sign
+    return a * px^2 + b * px + c
 
 ##############################################################################################################
 # RUN MAIN PROGRAM
