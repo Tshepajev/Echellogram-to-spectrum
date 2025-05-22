@@ -536,10 +536,16 @@ class calibration_window():
         
         self.photo_array = [] # assumes square image
         self.bounds_input_array = []
-        self.order_plot_curves = []
         self.order_plot_points = []
         self.order_poly_coefs = []
+        self.order_plot_curves = []
         self.order_bound_points = []
+        
+        # Spectrum data
+        self.orders_x_pixels = []
+        self.orders_wavelength_coefficients = []
+        self.orders_wavelengths = []
+        self.orders_intensities = []
         self.spectrum_curve = None
         
         #self.order_data = {} # necessary because order classes get sorted and indices change
@@ -656,7 +662,7 @@ class calibration_window():
         btn_autocalibrate = tkinter.Button(self.frame_buttons, text = "Try automatic calibration", command = self.autocalibrate)
         btn_button_save = tkinter.Button(self.frame_buttons, text = "Save calibration data", command = self.save_data)
         btn_ignore_orders = tkinter.Button(self.frame_buttons, text = "Toggle ignore orders near top edge", command = self.ignore_top_orders_fn)
-        btn_only_shift_bounds = tkinter.Button(self.frame_buttons, text = "Toggle shift only bounds right", command = self.only_shift_bounds)
+        btn_only_shift_bounds = tkinter.Button(self.frame_buttons, text = "Toggle shift also curve shape", command = self.only_shift_bounds)
         
         btn_autocalibrate.pack()
         btn_button_save.pack()
@@ -1329,9 +1335,9 @@ class calibration_window():
         with open(output_path + '_Order_coefficients.csv', 'w') as file:
             file.write('Order_nr,Coef1,Coef2,Coef3...\n') # headers
             
-            for idx in range(len(self.calib_data_dynamic)):
-                order_nr = self.calib_data_static[idx].order_nr
-                coefs = self.order_poly_coefs[idx]
+            for order_idx in range(len(self.calib_data_dynamic)):
+                order_nr = self.calib_data_static[order_idx].order_nr
+                coefs = self.order_poly_coefs[order_idx]
                 file.write(str(order_nr))
                 
                 for coef in coefs:
@@ -1360,7 +1366,8 @@ class calibration_window():
     def output_spectrum(self):
         #x_data = self.spectrum_ax.get_xdata()
         #y_data = self.spectrum_ax.get_ydata()
-        x_values, z_values, order_nrs = self.get_spectrum_full()
+        x_values, z_values = self.compile_full_spectrum()
+        order_nrs = self.get_spectrum_order_nrs()
         data = np.column_stack((x_values, z_values, order_nrs))
         np.savetxt(output_path + '_Spectrum.csv', data, fmt = '%.8e', delimiter = ',', comments = '', header = 'Wavelength (nm),Intensity,Order nr')
         
@@ -1653,6 +1660,9 @@ class calibration_window():
         # TODO: update only the selected order and all bounds
         self.update_order_curves()
         
+        # Update spectrum data with reordered orders
+        self.update_spectrum_data()
+        
         # Redraw plot
         if self.autoupdate_spectrum and (not self.program_mode is None):
             self.update_spectrum()
@@ -1678,6 +1688,11 @@ class calibration_window():
             self.update_point_instances()
             self.update_order_curves()
             self.calculate_all_bounds(initialize_x = True)
+            
+            # Recalculate intensities
+            for order_idx in range(len(self.calib_data_dynamic)):
+                self.update_spectrum_data_list(order_idx, self.orders_intensities, self.calc_order_intensities)
+            
             self.update_spectrum(autoscale = True)
     
     def shift_orders_right(self, shift_amount = 0, button_call = True):
@@ -1705,6 +1720,7 @@ class calibration_window():
             self.update_point_instances()
             self.update_order_curves()
             self.calculate_all_bounds(initialize_x = True)
+            self.update_spectrum_data()
             self.update_spectrum(autoscale = True)
     
     
@@ -1758,6 +1774,7 @@ class calibration_window():
         self.update_point_instances()
         self.update_order_curves()
         self.calculate_all_bounds(initialize_x = True)
+        self.update_spectrum_data()
         self.update_spectrum(autoscale = True)
         
         self.set_feedback('Shifts reset. Relative shifts (up, right): ' + str(up) + ', ' + str(right))
@@ -1788,6 +1805,9 @@ class calibration_window():
         
         # Disable orders that are too close to the top edge
         self.check_top_orders_proximity()
+        
+        # Calculate x-points, wavelengths, quadratic coefficients for the conversion, corresponding intensities
+        self.update_spectrum_data()
         
         # Compile spectrum from diffraction orders and the bounds
         self.draw_spectrum()
@@ -1904,7 +1924,7 @@ class calibration_window():
         self.spectrum_ax = self.spectrum_fig.gca()
         
         # Plot curve
-        x_values, z_values, order_nrs = self.get_spectrum_full()
+        x_values, z_values = self.compile_full_spectrum()
         self.spectrum_curve, = self.spectrum_ax.plot(x_values, z_values, 'tab:pink')
         
         # rescale to fit
@@ -1948,6 +1968,7 @@ class calibration_window():
         # Disable orders that are too close to the top edge
         self.check_top_orders_proximity()
         
+        self.update_spectrum_data()
         self.update_spectrum(autoscale = True)
         
         # Draw things again and wait for drawing to finish
@@ -2039,7 +2060,7 @@ class calibration_window():
         if self.spectrum_curve is None:
             return
         
-        x_values, z_values, order_nrs = self.get_spectrum_full()
+        x_values, z_values = self.compile_full_spectrum()
         
         # Plot curve
         self.spectrum_curve.set_xdata(x_values)
@@ -2193,112 +2214,76 @@ class calibration_window():
     
    
     # Get z-values of corresponding x and y values and cut them according to left and right bounds
-    def get_spectrum_full(self):
-        x_values = None
-        z_values = []
-        order_nrs = []
-        
-        
-        nr_pixels = self.photo_array.shape[0]
-        #photo_pixels = np.arange(nr_pixels)
-        
-        # Compile z-data from the photo with all diffraction orders
-        # Iterate over orders backwards because they are sorted by order nr (top to bottom)
-        for order_idx in range(len(self.calib_data_dynamic) - 1, -1, -1):
-            
-            # Skip calculation for orders too close to the edge
-            if not self.calib_data_static[order_idx].use_order:
-                continue
-            
+    def compile_full_spectrum(self):
+        x_values = np.concatenate(self.orders_wavelengths[::-1]) # reverse order
+        z_values = np.concatenate(self.orders_intensities[::-1]) # reverse order
+        return x_values, z_values
+    
+    # Iterate over orders and save the order number as a complement to the x and z values
+    def get_spectrum_order_nrs(self):
+        order_nrs_list = []
+        for order_idx in range(len(self.calib_data_dynamic) - 1, -1, -1): # reverse order
             order_nr = self.calib_data_static[order_idx].order_nr
-            
-            #curve_x = photo_pixels
-            curve_x = self.order_plot_curves[order_idx].get_xdata()
-            curve_y = self.order_plot_curves[order_idx].get_ydata()
-            curve_y = np.round(curve_y)
-            
-            # sort the arrays in increasing x value
-            #curve_x, curve_y = sort_related_arrays(curve_x, curve_y)
-            
-            
-            # Interpolate and get y-values of the calibration curve at every pixel
-            #y_pixels = np.interp(photo_pixels, curve_x, curve_y) # pixel values are already calculated by the polynomial
-            #y_pixels = y_pixels.astype(np.int32) # convert to same format as x-values
-            y_pixels = curve_y.astype(np.int32) # convert to same format as x-values
-            
-            
-            # Get bounds for this diffraction order
-            [x_left, x_right] = self.calib_data_static[order_idx].bounds_px
-            
-            # Default bounds as first px and last px
-            if x_left is None:
-                x_left = 0
-            if x_right is None:
-                x_right = nr_pixels - 1
-            
-            # get z-values corresponding to the interpolated pixels on the order curve
-            # Save only pixels that are between bounds, check 20 px left and right from bound for intersection
-            for idx2 in np.arange(max(0, x_left - 20), min(nr_pixels, x_right + 1 + 20), dtype = int):
-                
-                # Save px only if it's between left and right bounds
-                x_px = curve_x[idx2]
-                
-                # Do stuff if point is between bounds
-                #if self.point_in_range(x_value, curve_x, curve_y, x2, y2, x3, y3): # intersection function is way too slow
-                if x_left <= x_px <= x_right:
-                    order_nrs.append(order_nr)
-                    
-                    y_px = y_pixels[idx2]
-                    
-                    [wave_start, wave_end] = self.calib_data_static[order_idx].bounds_wave
-                    
-                    # No input with wavelengths, output x-axis as pixel values
-                    if wave_start is None:
-                        if x_values is None: # Initialize
-                            x_values = [0]
-                        else:
-                            x_values.append(x_values[-1] + 1) # increment by 1
-                        
-                        
-                    # Has input with wavelengths, output x-axis as wavelengths
-                    else:
-                        if x_values is None: # Initialize
-                            x_values = []
-                        
-                        x_value = self.get_wavelength(order_idx, x_px)
-                        x_values.append(x_value)
-                        
-                    
-                    # Get the width to integrate over (between two diffraction orders)
-                    width = 1 #self.integral_width
-                    center = self.calib_data_dynamic[order_idx].avg_y
-                    if order_idx > 0: # check for out of bounds error
-                        low = self.calib_data_dynamic[order_idx - 1].avg_y
-                        width = (center - low) / 2 # TODO: remove division (0.5 is radius)
-                    elif len(self.calib_data_dynamic) > order_idx + 1: # check for out of bounds error
-                        high = self.calib_data_dynamic[order_idx + 1].avg_y
-                        width = (high - center) / 2
-                    
-                    # very important, otherwise 2.49 and 2.51 will have 150% jump in integral because of rounding
-                    width = clip(width, min_v = 3) 
-                    
-                    
-                    # Get z value from Echellogram
-                    integral = integrate_order_width(self.photo_array, x_px, y_px, width = width)
-                    z_values.append(integral) # x and y have to be switched (somewhy)
-                    
-        # While at it, save spectrum total intensity
-        self.spectrum_total_intensity = sum(z_values)
+            order_nrs_list.append(np.full(len(self.orders_wavelengths[order_idx]), order_nr))
         
-        return x_values, z_values, order_nrs
+        order_nrs = np.concatenate(order_nrs_list)
+        return order_nrs
+    
+    # Iterate over all orders and update/initialize the data associated with the spectrum (wl and int etc.)
+    def update_spectrum_data(self):
+        for order_idx in range(len(self.calib_data_dynamic)):
+            self.update_order_spectrum_data(order_idx)
+            
+    
+    # Update/initialize the data associated with the spectrum (wl and int etc.) for the given order
+    def update_order_spectrum_data(self, order_idx):
+        # Get x_pixel values between bounds (e.g. array of ints from 480 to 701)
+        self.update_spectrum_data_list(order_idx, self.orders_x_pixels, self.calc_order_x_pixels)
+        
+        # Calculate coefficients which are used to convert px => wavelength
+        self.update_spectrum_data_list(order_idx, self.orders_wavelength_coefficients, self.calc_order_wavelength_coefs)
+        
+        # Get wavelengths corresponding to the x_pixels
+        self.update_spectrum_data_list(order_idx, self.orders_wavelengths, self.calc_order_wavelengths)
+        
+        # Get intensities (integral over few px vertically) corresponding to the x_pixels
+        self.update_spectrum_data_list(order_idx, self.orders_intensities, self.calc_order_intensities)
     
     
-    def get_spectrum_order(self, order_idx):
-        pass    
+    # Either initialize or update spectrum data lists (values_fn output goes into array)
+    def update_spectrum_data_list(self, order_idx, array, values_fn):
+        list_len = len(array)
+        if order_idx > list_len:
+            raise Exception(f'update_spectrum_data_list() | Trying to modify uninitialized order_idx {order_idx} when length is {list_len}. function: {values_fn}')
+        
+        values = values_fn(order_idx)
+        if order_idx == list_len: # Initialize
+            array.append(values)
+        else: # Update
+            array[order_idx] = values
     
-    # Calculates the wavelength of a pixel on a given order with either linear or quadratic function.
-    # Prefers quadratic function if bounds data has three points.
-    def get_wavelength(self, order_idx, x_px):
+    # Get x-pixel values for current bounds (e.g. array of ints from 480 to 701)
+    def calc_order_x_pixels(self, order_idx):
+        if order_idx > len(self.calib_data_dynamic):
+            raise Exception(f'calc_order_x_pixels() | order_idx out of bounds: {order_idx}')
+        
+        # Get bounds for this diffraction order
+        [x_left, x_right] = self.calib_data_static[order_idx].bounds_px
+        
+        # Default bounds as first px and last px
+        if x_left is None:
+            x_left = 0
+        if x_right is None:
+            nr_pixels = self.photo_array.shape[0]
+            x_right = nr_pixels - 1
+        
+        px_values = np.arange(x_left, x_right + 1, dtype = int)
+        return px_values
+    
+    # Calculate coefficients for calculating px => wl
+    def calc_order_wavelength_coefs(self, order_idx):
+        if order_idx > len(self.calib_data_dynamic):
+            raise Exception(f'calc_order_wavelength_coefs() | order_idx out of bounds: {order_idx}')
         
         # Take bounds from (latest aka shifted) order points class
         [px_start, px_end] = self.calib_data_static[order_idx].bounds_px
@@ -2307,13 +2292,110 @@ class calibration_window():
         
         # Do linear regression and find the wavelength of x_px
         if (px_middle is None) or (wave_middle is None):
-            wavelength = linear_regression(x_px, px_start, px_end, wave_start, wave_end)
+            linear_coefs = np.polynomial.polynomial.polyfit([px_start, px_end], [wave_start, wave_end], 1)
+            return linear_coefs
         
         # Use quadratic fn
         else:
-            wavelength = quadratic_regression(x_px, [px_start, px_middle, px_end], [wave_start, wave_middle, wave_end])
+            poly_coefs = np.polynomial.polynomial.polyfit([px_start, px_middle, px_end], [wave_start, wave_middle, wave_end], 2)
+            return poly_coefs
+    
+    # Calculates the wavelengths of the pixels on a given order with the coefficients (no matter if linear or quadratic).
+    def calc_order_wavelengths(self, order_idx):
+        if order_idx > len(self.calib_data_dynamic):
+            raise Exception(f'calc_order_wavelengths() | order_idx out of bounds: {order_idx}')
         
-        return wavelength
+        x_array = self.orders_x_pixels[order_idx]
+        coefs = self.orders_wavelength_coefficients[order_idx]
+        wavelengths = np.polynomial.polynomial.polyval(x_array, coefs)
+        return wavelengths
+    
+    # Calculates the wavelengths of the pixels on a given order with the coefficients (no matter if linear or quadratic).
+    def calc_order_intensities(self, order_idx):
+        if order_idx > len(self.calib_data_dynamic):
+            raise Exception(f'calc_order_wavelengths() | order_idx out of bounds: {order_idx}')
+        
+        
+        # Get the width to integrate over (between two diffraction orders)
+        width = 1 #self.integral_width
+        center = self.calib_data_dynamic[order_idx].avg_y
+        if order_idx > 0: # check for out of bounds error
+            low = self.calib_data_dynamic[order_idx - 1].avg_y
+            width = abs(center - low) / 2 # TODO: remove division (0.5 is radius)
+        elif len(self.calib_data_dynamic) > order_idx + 1: # check for out of bounds error
+            high = self.calib_data_dynamic[order_idx + 1].avg_y
+            width = abs(high - center) / 2
+        
+        # very important, otherwise 2.49 and 2.51 will have 150% jump in integral because of rounding
+        width = clip(width, min_v = 3) 
+        
+        
+        # Get coordinates of the center pixels 
+        x_array = self.orders_x_pixels[order_idx]
+        y_array = np.polynomial.polynomial.polyval(x_array, self.order_poly_coefs[order_idx])
+        y_array = np.round(y_array).astype(int) # convert to same format as x-values
+        
+        
+        # Get z values from Echellogram
+        integrals = self.integrate_order_width(x_array, y_array, width = width)        
+        return integrals
+    
+    # Sum pixels around the order
+    # If the width is even number then take asymmetrically one pixel from lower index
+    # if use_weights is True then the integral is summed with Gaussian weights (max is in center) with FWHM of width
+    def integrate_order_width(self, x_array, y_array, width = 1, use_weights = False):
+        if width == 0:
+            return
+        
+        width = round(width)
+        
+        # Clip coordinates to be within bounds of the image
+        nr_pixels_y = self.photo_array.shape[0]
+        nr_pixels_x = self.photo_array.shape[1]
+        x_array = np.clip(x_array, 0, nr_pixels_x - 1).astype(int) 
+        y_array = np.clip(y_array, 0, nr_pixels_y - 1).astype(int)
+        
+        # Return the intensities from the diffr. order curve
+        if width == 1:
+            return self.photo_array[y_array, x_array] # x and y have to be switched (first dimension is vertical on image)
+        
+        # Get offsets from y_array to integrate over
+        idx_lower = math.floor(width / 2)
+        idx_higher = math.ceil(width / 2) # range omits last value
+        y_offsets = np.arange(-idx_lower, idx_higher)
+        
+        # Create a 2D array of absolute y-indices for integration
+        # Shape: (nr_pixels_x, width)
+        # Each row i corresponds to y_array[i] + y_offsets
+        integral_y_indices = y_array[:, np.newaxis] + y_offsets[np.newaxis, :]
+        
+        # Clip these y-indices to be within image bounds
+        integral_y_indices = np.clip(integral_y_indices, 0, nr_pixels_y - 1)
+
+        # Expand x_array for indexing photo_array
+        # Shape: (nr_pixels_x, width)
+        integral_x_indices = np.repeat(x_array[:, np.newaxis], width, axis=1)
+        
+        # Gather the pixel values from photo_array
+        z_array = self.photo_array[integral_y_indices, integral_x_indices]
+        
+        if use_weights:
+            # Gaussian weights based on y_offsets from the center
+            # a * math.exp(-(y_pixel - y_idx) ** 2 / 2 / c ** 2)
+            # (y_pixel - y_idx)**2 effectively becomes y_offsets**2
+            a = 1 # normalized
+            c = width / 2.35482 # width is FWHM
+            gaussian_weights = a * np.exp(-(y_offsets ** 2) / (2 * c ** 2)) # Shape: (width,)
+            
+            # Multiply pixel values by weights and sum along the integration width axis
+            integrals = np.sum(z_array * gaussian_weights[np.newaxis, :], axis=1)
+    
+        else:
+            integrals = np.sum(z_array, axis=1)
+        
+        return integrals
+    
+    
     
     # Check if top orders are too close to the edge and if so then don't use these
     def check_top_orders_proximity(self):
@@ -2393,7 +2475,7 @@ def quadratic_regression(x, x_values, y_values):
     poly_coefs = np.polynomial.polynomial.polyfit(x_values, y_values, 2)
     y = poly_coefs[2] * x ** 2 + poly_coefs[1] * x + poly_coefs[0]
     return y
-
+'''
 # Sum pixels around the order
 # If the width is even number then take asymmetrically one pixel from lower index
 # if use_weights is True then the integral is summed with Gaussian weights (max is in center) with FWHM of width
@@ -2419,7 +2501,7 @@ def integrate_order_width(photo_array, x_pixel, y_pixel, width = 1, use_weights 
         integral += photo_array[y_idx, x_pixel] * gaussian_weight # x and y have to be switched (somewhy)
     
     return integral
-
+'''
 
 def get_polynomial_intersection(coefs1, coefs2, image_size, is_left = True):
     x1, y1, x2, y2 = calc_polynomial_intersection(coefs1, coefs2)
