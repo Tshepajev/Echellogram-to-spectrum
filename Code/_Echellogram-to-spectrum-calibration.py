@@ -3,7 +3,7 @@
 
 # Code to convert an echellogram (photo) to spectrum
 
-# TODO: check out of bounds orders
+
 # TODO: check order edit mode
 # TODO: better align (interpolate) calibration curves
 
@@ -925,18 +925,18 @@ class calibration_window():
         static_len = input_array.shape[0] # nr of orders in input bounds file
         
         # Let user know that input data wasn't perfect
-        if dynamic_len < static_len:
-            print('_Vertical_points.csv has more rows than drawn orders. Highest order numbers in the file are ignored.')
-            self.set_feedback('_Vertical_points.csv has more rows than drawn orders. Highest order nrs are ignored.', 15000)
+        if dynamic_len != static_len:
+            print(f'Warning! _Vertical_points.csv has {static_len} rows, but there are {dynamic_len} drawn orders.')
+            self.set_feedback(f'Warning! _Vertical_points.csv has {static_len} rows, but there are {dynamic_len} drawn orders.', 15000)
         
-        # Get row where order nr is same as self.first_order_nr
+        # Check if self.first_order_nr is in the file
         idxs = np.where(input_array[:,0] == self.first_order_nr)[0]
         if len(idxs) > 0: # There's match
             idx = idxs[0]
         else:
-            print('First order nr not in _Vertical_points.csv')
-            #self.set_feedback('First order nr not in _Vertical_points.csv', 15000)
-            raise Exception('First order nr not in _Vertical_points.csv')
+            print('ERROR! First order nr not in _Vertical_points.csv')
+            #self.set_feedback('ERROR! First order nr not in _Vertical_points.csv', 15000)
+            raise Exception('ERROR! First order nr not in _Vertical_points.csv')
             
         
         # Iterate over rows in input file array
@@ -1019,8 +1019,13 @@ class calibration_window():
     # Save calibration curves and the corresponding points
     def save_data(self):
         
-        # decode objects into dictionaries
-        save_dict = {'dynamic' : [], 'static' : []}
+        # decode objects into dictionary in certain key order
+        save_dict = {}
+        save_dict['first_order_nr'] = self.first_order_nr
+        save_dict['total_shift_right'] = self.total_shift_right
+        save_dict['total_shift_up'] = self.total_shift_up
+        save_dict['static'] = []
+        save_dict['dynamic'] = []
         
         
         # Iterate over orders
@@ -1033,13 +1038,10 @@ class calibration_window():
             static_dict = order.save_decode()
             save_dict['static'].append(static_dict)
         
-        save_dict['first_order_nr'] = self.first_order_nr
-        save_dict['total_shift_right'] = self.total_shift_right
-        save_dict['total_shift_up'] = self.total_shift_up
         
         # Save as JSON readable output
         with open(output_path + '_Calibration_data.json', 'w') as file: # '_' in front to find easily among Echellograms
-            json.dump(save_dict, file, sort_keys=True, indent=4)
+            json.dump(save_dict, file, sort_keys = False, indent = 2)
         
         self.set_feedback('Calibration data saved')
     
