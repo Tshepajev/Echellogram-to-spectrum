@@ -45,20 +45,23 @@ There are different folders in the repository:
 ### Creating Calibration Data
 
 1. Place the **Calibrator** (.py or .exe) in the folder with the echellograms.
-2. **Optional** (recommended): Place the previous correct calibration data `.json` file in the same folder with the echellograms.
-    - **Optional** (strongly recommended): Back up the calibration data before running **Calibrator** (since it will overwrite the file when saving calibration data).
+2. **Optional** (recommended): Place the previous correct calibration data `_Calibration_data*.json` file (* can be anything) in the same folder with the echellograms.
+    - **Optional** (strongly recommended): Back up the calibration data before running **Calibrator** if you haven't renamed the calibration data (since it will overwrite the file when saving calibration data).
+	- **Warning!** Make sure there is max one calibration data file or the program will choose a random one.
 3. For **Calibrator v2** (skip for v3):
-    - Compile the bounds data **`_Vertical_points.csv`**.  
+    - Compile the bounds data **`_Vertical_points*.csv`**  (* can be anything).
     - You can use **`Extract aryx.py`** from helper files or use Sophi nXt tooltips to compile this data in Excel. The first row must be headers (gets ignored), and the columns must be:  
       `Order nr`, `Start px`, `End px`, `Start wavelength (nm)`, `End wavelength (nm)`, `Middle px` (optional), `Middle wavelength (nm)` (optional).  
       The px → wavelength conversion is quadratic, but close to linear, so the middle point is strongly recommended.
-    - Place the compiled **`_Vertical_points.csv`** in the same folder as the echellograms.
+    - Place the compiled **`_Vertical_points*.csv`** in the same folder as the echellograms.
+	- **Warning!** Make sure there is max one bounds data file or the program will choose a random one.
 4. Run **Calibrator**.
 5. Create or fine-tune the calibration data using the GUI. The most important adjustments are vertical and horizontal shifts, the first order number, and the order curve shape.  
     Consider the following:
     - Does the curve align with the bright line on the echellogram? Also, are the ghost lines approximately the same intensity on both sides? (shape and vertical shift)
     - Is a given wavelength in the correct order, as in Sophi nXt? (first order number)
     - Does the wavelength match with Sophi nXt? (first order number and horizontal shift, a little bit of shape)
+	- The optimal way of doing things is to have the bounds data as large as possible (starts from smallest order nr in JET campaign experiments) and the corresponding amount of orders drawn. The program excludes the orders that are out of bounds by default.
     - **Optional** (strongly recommended): Check multiple different samples for curve alignment. The alignment difference between samples should only be the shifts.
 6. Save the calibration data (this will overwrite the existing file, so **make backups!**).
 7. **Optional**: Output data like the spectrum for checking.
@@ -68,7 +71,8 @@ There are different folders in the repository:
 
 1. Place the **Processor** (.py or .exe) in the folder with the echellograms.
 2. Place the correct calibration data `.json` file (from **Calibrator**) in the same folder.
-3. **Optional**: Place spectral sensitivity data **`_Spectra_multipliers.csv`** in the same folder. The Processor will then interpolate-extrapolate wavelengths, and the intensity of each pixel of the spectrum will be multiplied by the corresponding (interpolated) multiplier. The file must contain headers row (gets ignored) and the following columns: `wavelengths (nm)`, `multipliers`.
+3. **Optional**: Place spectral sensitivity data **`_Spectra_multipliers*.csv`** in the same folder (* can be anything). The Processor will then interpolate-extrapolate wavelengths, and the intensity of each pixel of the spectrum will be multiplied by the corresponding (interpolated) multiplier. The file must contain headers row (gets ignored) and the following columns: `wavelengths (nm)`, `multipliers`.
+	- **Warning!** Make sure there is max one multipliers data file or the program will choose a random one.
 4. Run the **Processor**.
 5. **Optional** (recommended): Clean up by removing the **Processor** and calibration files from the folder.
 
@@ -197,11 +201,8 @@ Orders are essentially aligned with the "perfect" Hg lamp image that's saved int
 ---
 
 ## TODO
-- Top edge value mirroring when integrating an order close to the edge?
-- v3 - integrate data from aif file in .aryx file and remove the need for user to load in "_Vertical_points.csv"
-- Reset shifts to input data, not absolute zero.
+- v3 - integrate data from .aif file in .aryx file and remove the need for user to load in "_Vertical_points.csv"
 - Avg_y calc with curve data, not three points - more accurate
-- First order nr defines how many static data orders to skip. to_use only modifies output spectrum, nothing else. So, static data has 100 orders, starting from 35. Dynamic data has 10 orders and first order nr is 37, then first dynamic data order is static data with index 2.
 - The added order is automatically selected.
 - Spectral multipliers for processor
-- _Calibration_data*.json (wildcard)
+- Top edge value mirroring when integrating an order close to the edge?
