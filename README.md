@@ -16,7 +16,7 @@ https://github.com/Tshepajev/Echellogram-to-spectrum
 If something is broken (bug), a temporary fix is to (potentially save your data and) restart the program (exit and restart).  
 You can always roll back to a previous GitHub file version and compare changes. If you find bugs, please let me know!
 
-PS. Antivirus hunts the compiled `.exe`s like crazy. These are compiled directly from the source code using "PyInstaller --onefile script.py" This means all dependencies are included inside the executable. You can always just use the source code.
+PS. Antivirus hunts the compiled `.exe`s like crazy and that's why these are only under releases (right side of the webpage). These are compiled directly from the source code using "PyInstaller --onefile script.py" This means all dependencies are included inside the executable. You can always just use the source code.
 
 ---
 
