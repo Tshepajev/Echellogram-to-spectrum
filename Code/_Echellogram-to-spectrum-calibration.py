@@ -535,6 +535,7 @@ class calibration_window():
         
         
         self.photo_array = [] # assumes square image
+        self.cumulative_sum = None # for faster vertical integral calculation
         self.bounds_input_array = []
         self.order_plot_points = []
         self.order_poly_coefs = []
@@ -840,6 +841,12 @@ class calibration_window():
         self.photo_array = photo_array
         self.bounds_input_array = bounds_input_array
         
+        # Calculate stuff with given array
+        self.max_y_idx = self.photo_array.shape[0] - 1
+        self.max_x_idx = self.photo_array.shape[1] - 1
+        self.update_cumulsum() # pre-calculate cumulative column sums for integral calculation later
+        
+        
         # Initialize first order nr and horizontal shift
         if not calibration_data is None:
             if self.first_order_nr is None:
@@ -856,6 +863,16 @@ class calibration_window():
             self.load_dynamic_data(calibration_data)
             self.load_static_data(calibration_data)
     
+    # Calculate cumulative sum for each column separately for faster integral calculation for spectrum
+    # Gemini 2.5 Pro invention (and a good one)
+    def update_cumulsum(self):
+        """Pre-calculates and caches the cumulative sum of photo_array along axis 0."""
+        # Pad with a row of zeros at the top for easier cumulsum indexing:
+        # sum(S to E inclusive) = cumulsum[E+1] - cumulsum[S]
+        cumsum_temp = np.cumsum(self.photo_array, axis=0)
+        self.cumulative_sum = np.pad(cumsum_temp, ((1, 0), (0, 0)), 
+                                                mode='constant', constant_values=0.)
+        
             
     def load_dynamic_data(self, calibration_data):
         
@@ -1735,14 +1752,14 @@ class calibration_window():
         
         # shift order bounds (pixels)
         [orig_px_left, orig_px_right] = self.calib_data_static[order_idx].bounds_px_original
-        left_px = clip(orig_px_left + self.total_shift_right, 0, self.photo_array.shape[0] - 1)
-        right_px = clip(orig_px_right + self.total_shift_right, 0, self.photo_array.shape[0] - 1)
+        left_px = clip(orig_px_left + self.total_shift_right, 0, self.max_x_idx)
+        right_px = clip(orig_px_right + self.total_shift_right, 0, self.max_x_idx)
         
         [orig_px_middle, orig_wave_middle] = self.calib_data_static[order_idx].bounds_middle_orig
         [px_middle, wave_middle] = self.calib_data_static[order_idx].bounds_middle
         
         if not px_middle is None:
-            px_middle = clip(orig_px_middle + self.total_shift_right, 0, self.photo_array.shape[0] - 1)
+            px_middle = clip(orig_px_middle + self.total_shift_right, 0, self.max_x_idx)
         
         # Shift wavelengths. Under normal conditions this isn't done because wavelenghts should be locked to the bounds.
         # If self.shift_wavelengths == True then wavelengths are locked to order curves, otherwise to pixels on image
@@ -2276,8 +2293,7 @@ class calibration_window():
         if x_left is None:
             x_left = 0
         if x_right is None:
-            nr_pixels = self.photo_array.shape[0]
-            x_right = nr_pixels - 1
+            x_right = self.max_x_idx
         
         px_values = np.arange(x_left, x_right + 1, dtype = int)
         return px_values
@@ -2317,93 +2333,275 @@ class calibration_window():
         if order_idx > len(self.calib_data_dynamic):
             raise Exception(f'calc_order_wavelengths() | order_idx out of bounds: {order_idx}')
         
-        
-        # Get the width to integrate over (between two diffraction orders)
-        width = 1 #self.integral_width
-        center = self.calib_data_dynamic[order_idx].avg_y
-        if order_idx > 0: # check for out of bounds error
-            low = self.calib_data_dynamic[order_idx - 1].avg_y
-            width = abs(center - low) / 2 # TODO: remove division (0.5 is radius)
-        elif len(self.calib_data_dynamic) > order_idx + 1: # check for out of bounds error
-            high = self.calib_data_dynamic[order_idx + 1].avg_y
-            width = abs(high - center) / 2
-        
-        # very important, otherwise 2.49 and 2.51 will have 150% jump in integral because of rounding
-        width = clip(width, min_v = 3) 
-        
+        # Get radius over which to integrate given order
+        radius = self.get_order_radius(order_idx)
         
         # Get coordinates of the center pixels 
         x_array = self.orders_x_pixels[order_idx]
         y_array = np.polynomial.polynomial.polyval(x_array, self.order_poly_coefs[order_idx])
-        y_array = np.round(y_array).astype(int) # convert to same format as x-values
+        #y_array = np.round(y_array).astype(int) # convert to same format as x-values
         
         
         # Get z values from Echellogram
-        integrals = self.integrate_order_width(x_array, y_array, width = width)        
+        integrals = self.integrate_order_width(x_array, y_array, radius = radius)        
         return integrals
     
-    # Sum pixels around the order
-    # If the width is even number then take asymmetrically one pixel from lower index
-    # if use_weights is True then the integral is summed with Gaussian weights (max is in center) with FWHM of width
-    def integrate_order_width(self, x_array, y_array, width = 1, use_weights = False):
-        if width == 0:
-            return
+    # Get the width to integrate over (between two diffraction orders)
+    # Lower order nr has tighter order steps, so prefer lower index.
+    def get_order_radius(self, order_idx):
+        orders_dist = 1 # related to integral width (in Sophi settings) in some way
+        center = self.calib_data_dynamic[order_idx].avg_y # Assumes that the orders are regular and don't have big changes between orders
+        if order_idx <= 0: # check for out of bounds
+            high = self.calib_data_dynamic[order_idx + 1].avg_y
+            orders_dist = abs(high - center)
         
-        width = round(width)
+        else: # default
+            low = self.calib_data_dynamic[order_idx - 1].avg_y
+            orders_dist = abs(center - low)    
+        
+        # Integrate until 40 % to the next order to avoid overlap
+        radius = orders_dist * 0.4
+        
+        # very important if radius is integer (not anymore), otherwise 0.49 and 0.51 will have 150% jump in integral because of rounding
+        radius = clip(radius, min_v = 0.1)
+        
+        return radius
+    
+    
+    # Sum pixels around the order with the given radius. The radius can be a float, only integers are x_array.
+    # if use_weights is True then the integral is summed with Gaussian weights (max is in center) with FWHM of width
+    def integrate_order_width(self, x_array, y_array, radius = 0, use_weights = False):
+        #width = round(width)
         
         # Clip coordinates to be within bounds of the image
-        nr_pixels_y = self.photo_array.shape[0]
-        nr_pixels_x = self.photo_array.shape[1]
-        x_array = np.clip(x_array, 0, nr_pixels_x - 1).astype(int) 
-        y_array = np.clip(y_array, 0, nr_pixels_y - 1).astype(int)
+        x_array = np.clip(x_array, 0, self.max_x_idx).astype(int) 
+        y_array = np.clip(y_array, 0, self.max_y_idx).astype(float)
         
         # Return the intensities from the diffr. order curve
-        if width == 1:
+        if radius == 0:
             return self.photo_array[y_array, x_array] # x and y have to be switched (first dimension is vertical on image)
         
-        # Get offsets from y_array to integrate over
-        idx_lower = math.floor(width / 2)
-        idx_higher = math.ceil(width / 2) # range omits last value
-        y_offsets = np.arange(-idx_lower, idx_higher)
-        
-        # Create a 2D array of absolute y-indices for integration
-        # Shape: (nr_pixels_x, width)
-        # Each row i corresponds to y_array[i] + y_offsets
-        integral_y_indices = y_array[:, np.newaxis] + y_offsets[np.newaxis, :]
-        
-        # Clip these y-indices to be within image bounds
-        integral_y_indices = np.clip(integral_y_indices, 0, nr_pixels_y - 1)
-
-        # Expand x_array for indexing photo_array
-        # Shape: (nr_pixels_x, width)
-        integral_x_indices = np.repeat(x_array[:, np.newaxis], width, axis=1)
-        
-        # Gather the pixel values from photo_array
-        z_array = self.photo_array[integral_y_indices, integral_x_indices]
-        
-        if use_weights:
-            # Gaussian weights based on y_offsets from the center
-            # a * math.exp(-(y_pixel - y_idx) ** 2 / 2 / c ** 2)
-            # (y_pixel - y_idx)**2 effectively becomes y_offsets**2
-            a = 1 # normalized
-            c = width / 2.35482 # width is FWHM
-            gaussian_weights = a * np.exp(-(y_offsets ** 2) / (2 * c ** 2)) # Shape: (width,)
-            
-            # Multiply pixel values by weights and sum along the integration width axis
-            integrals = np.sum(z_array * gaussian_weights[np.newaxis, :], axis=1)
-    
-        else:
-            integrals = np.sum(z_array, axis=1)
+        '''
+        integrals = []
+        for idx, x in enumerate(x_array):
+            y_center = y_array[idx]
+            integral = self.interpolate_integral_data(x, y_center, radius)
+            integrals.append(integral)
+        '''
+        integrals = self.integrate_order_width_interpolated(x_array, y_array, radius)
         
         return integrals
     
+    '''
+    # The x_array are integers. y_array are floats but are bound by image top and bottom indices (0 and 1023).
+    # Between the bounds the pixel value (z-value, intensity) is interpolation (quadratic fn) between neighboring pixels (vertical axis).
+    def interpolate_integral_data(self, x, y, radius):
+        
+        # Get float y-index bounds for the integral
+        high_y = y + radius
+        low_y = y - radius
+        high_y = clip(high_y, min_v = 0, max_v = self.max_y_idx)
+        low_y = clip(low_y, min_v = 0, max_v = self.max_y_idx)
+        
+        # Direct sum between full pixel indices
+        sum_high = math.floor(high_y)
+        sum_low = math.ceil(low_y)
+        sum_y_indices = np.arange(sum_low, sum_high + 1, dtype = int)
+        sum_x_indices = np.full(sum_y_indices.shape, x, dtype = int)
+        sum_array = self.photo_array[sum_y_indices, sum_x_indices] # Gather the pixel values from photo_array
+        integral = np.sum(sum_array)
+        
+        # Get the next polynomial interpolation indices for fractional addition 
+        interp_lowest = sum_low - 1
+        interp_highest = sum_high + 1
+        
+        # Keep polynomial indices within image bounds
+        offset_low = 0
+        offset_high = 0
+        if interp_lowest < 0:
+            offset_low = 1
+        elif interp_highest > self.max_y_idx: # radius isn't big enough to consider both simultaneously
+            offset_high = -1
+        
+        
+        # Get y-indices to do quadratic fn interpolation on
+        x_indices = np.full((3, ), x, dtype = int)
+        interpolation_indices_low = np.array([sum_low - 1, sum_low, sum_low + 1]) + offset_low
+        interpolation_indices_high = np.array([sum_high - 1, sum_high, sum_high + 1]) + offset_high
+        z_values_low = self.photo_array[interpolation_indices_low, x_indices]
+        z_values_high = self.photo_array[interpolation_indices_high, x_indices]
+        
+        # Get value from fractional index. Do interpolation and multiply the value with remaining index fraction (smooth <=> discrete integral conversion).
+        low_fraction = sum_low - low_y
+        high_fraction = high_y - sum_high
+        integral += simple_quadratic_interpolate(low_y, interpolation_indices_low, z_values_low) * low_fraction
+        integral += simple_quadratic_interpolate(high_y, interpolation_indices_high, z_values_high) * high_fraction
+        return integral
+    '''
+    
+    # Made with Gemini 2.5 Pro (based on my algorithm)
+    def integrate_order_width_interpolated(self, x_indices, y_indices_center_float, radius_float):
+        """
+        Integrates pixel intensities along y-columns with float bounds and quadratic interpolation.
+
+        Args:
+            x_indices (np.ndarray): 1D array of integer x-coordinates (columns).
+            y_indices_center_float (np.ndarray): 1D array of float y-coordinates (centers of integration).
+            radius_float (float or np.ndarray): Integration radius. Can be scalar or array.
+
+        Returns:
+            np.ndarray: 1D array of integrated intensity values.
+        """
+        
+        
+        # Ensure inputs are numpy arrays
+        if not isinstance(x_indices, np.ndarray): 
+            x_indices = np.array(x_indices, dtype=int)
+        if not isinstance(y_indices_center_float, np.ndarray): 
+            y_indices_center_float = np.array(y_indices_center_float, dtype=float)
+        
+        if np.isscalar(radius_float):
+            radius_float = np.full_like(y_indices_center_float, float(radius_float), dtype=float)
+        elif not isinstance(radius_float, np.ndarray):
+            radius_float = np.array(radius_float, dtype=float)
+
+        num_points = len(x_indices)
+        if num_points == 0:
+            return np.array([], dtype=float)
+        
+        # 1. Clip x_coords to be within image bounds (should be done by caller ideally)
+        x_indices = np.clip(x_indices, 0, self.max_x_idx)
+        
+        # 2. Calculate float y-integration-bounds and clip them to image limits
+        y_bounds_low_float = y_indices_center_float - radius_float
+        y_bounds_high_float = y_indices_center_float + radius_float
+
+        y_bounds_low_float = np.clip(y_bounds_low_float, 0.0, float(self.max_y_idx))
+        y_bounds_high_float = np.clip(y_bounds_high_float, 0.0, float(self.max_y_idx))
+        
+        # 3. Determine integer y-indices for the "bulk" part of the sum
+        # These define the inclusive range [y_bulk_sum_low_int, y_bulk_sum_high_int]
+        y_bulk_sum_low_int = np.ceil(y_bounds_low_float).astype(int)
+        y_bulk_sum_high_int = np.floor(y_bounds_high_float).astype(int)
+        
+        # Clip again to be absolutely sure after ceil/floor (mostly for type consistency)
+        y_bulk_sum_low_int = np.clip(y_bulk_sum_low_int, 0, self.max_y_idx)
+        y_bulk_sum_high_int = np.clip(y_bulk_sum_high_int, 0, self.max_y_idx)
+
+        # 4. Calculate fractional lengths for the interpolated parts
+        # low_fraction: portion from y_bounds_low_float up to the first full pixel
+        low_fraction = np.abs(y_bulk_sum_low_int - y_bounds_low_float)
+        # high_fraction: portion from the last full pixel up to y_bounds_high_float
+        high_fraction = np.abs(y_bounds_high_float - y_bulk_sum_high_int)
+        
+
+        # 5. Calculate bulk sum using the pre-calculated cumulative sum array
+        # Sum from S=y_bulk_sum_low_int to E=y_bulk_sum_high_int (inclusive) is:
+        # cumulative_sum[E+1] - cumulative_sum[S]
+        
+        idx_E_plus_1 = y_bulk_sum_high_int + 1 # Upper index for cumulsum (exclusive in slicing terms)
+        idx_S = y_bulk_sum_low_int            # Lower index for cumulsum (inclusive)
+        
+        term_high = self.cumulative_sum[idx_E_plus_1, x_indices]
+        term_low = self.cumulative_sum[idx_S, x_indices]
+        bulk_sum_values = term_high - term_low
+        
+        # Correct for cases where the bulk interval is empty (e.g., y_bulk_sum_high_int < y_bulk_sum_low_int)
+        #empty_interval_mask = y_bulk_sum_high_int < y_bulk_sum_low_int
+        #bulk_sum_values[empty_interval_mask] = 0.0
+        
+        # Initialize interpolated values
+        interp_contrib_low = np.zeros(num_points, dtype=float)
+        interp_contrib_high = np.zeros(num_points, dtype=float)
+
+        # 6. Quadratic interpolation for the lower fractional part (only if low_fraction > 0)
+        # Points where low_fraction is significant enough to warrant interpolation
+        needs_low_interp_mask = low_fraction > 1e-3 # Avoid calculations for zero fractions
+
+        if np.any(needs_low_interp_mask):
+            # Filter data for points needing low interpolation
+            ylf_clip_subset = y_bounds_low_float[needs_low_interp_mask]
+            x_coords_subset_low = x_indices[needs_low_interp_mask]
+
+            # Determine stencil center: integer y pixel "closest" to the float boundary
+            # Clip stencil center so that stencil_center +/- 1 are valid indices
+            y_center_stencil_low = np.round(ylf_clip_subset).astype(int)
+            y_center_stencil_low = np.clip(y_center_stencil_low, 1, self.max_y_idx - 1)
+            
+            yl_m1 = y_center_stencil_low - 1
+            yl_0  = y_center_stencil_low
+            yl_p1 = y_center_stencil_low + 1
+            
+            # Fetch z-values for the stencil points
+            zl_m1 = self.photo_array[yl_m1, x_coords_subset_low]
+            zl_0  = self.photo_array[yl_0,  x_coords_subset_low]
+            zl_p1 = self.photo_array[yl_p1, x_coords_subset_low]
+            
+            val_at_low_bound = self.vectorized_quadratic_interpolate(
+                ylf_clip_subset, y_center_stencil_low, zl_m1, zl_0, zl_p1
+            )
+            interp_contrib_low[needs_low_interp_mask] = val_at_low_bound * low_fraction[needs_low_interp_mask]
+
+        # 7. Quadratic interpolation for the upper fractional part (only if high_fraction > 0)
+        needs_high_interp_mask = high_fraction > 1e-3
+
+        if np.any(needs_high_interp_mask):
+            # Filter data for points needing high interpolation
+            yhf_clip_subset = y_bounds_high_float[needs_high_interp_mask]
+            x_coords_subset_high = x_indices[needs_high_interp_mask]
+
+            y_center_stencil_high = np.round(yhf_clip_subset).astype(int)
+            y_center_stencil_high = np.clip(y_center_stencil_high, 1, self.max_y_idx - 1)
+
+            yh_m1 = y_center_stencil_high - 1
+            yh_0  = y_center_stencil_high
+            yh_p1 = y_center_stencil_high + 1
+            
+            zh_m1 = self.photo_array[yh_m1, x_coords_subset_high]
+            zh_0  = self.photo_array[yh_0,  x_coords_subset_high]
+            zh_p1 = self.photo_array[yh_p1, x_coords_subset_high]
+
+            val_at_high_bound = self.vectorized_quadratic_interpolate(
+                yhf_clip_subset, y_center_stencil_high, zh_m1, zh_0, zh_p1
+            )
+            interp_contrib_high[needs_high_interp_mask] = val_at_high_bound * high_fraction[needs_high_interp_mask]
+            
+        # 8. Combine all parts: Bulk sum + contribution from lower fraction + contribution from upper fraction
+        total_integrals = bulk_sum_values + interp_contrib_low + interp_contrib_high
+        
+        return total_integrals
+    
+    # Gemini 2.5 Pro invention for faster quadratic interpolation
+    # Much faster than my simple_quadratic_interpolate() because np.polynomial.polynomial.polyfit() isn't easily vectorizable.
+    # There is max about 20 % relative int difference between this and simple_quadratic_interpolate() integrals but it's mostly
+    # for noise and compared to max intensity in the spectrum, completely negligible.
+    def vectorized_quadratic_interpolate(self, y_target_float, y_center_int_stencil, 
+                                          z_stencil_minus_1, z_stencil_0, z_stencil_plus_1):
+        """
+        Performs quadratic interpolation using a 3-point stencil.
+        y_target_float: Array of N target y-coordinates (float).
+        y_center_int_stencil: Array of N integer y-coordinates, center of the stencil [-1, 0, +1].
+        z_stencil_minus_1, z_stencil_0, z_stencil_plus_1: Pixel values at stencil points.
+        """
+        y_rel = y_target_float - y_center_int_stencil # Target relative to stencil center
+        
+        # Lagrange coefficients for stencil points [-1, 0, 1] relative to y_center_int_stencil
+        # L_minus_1 corresponds to z_stencil_minus_1 (at relative coordinate -1)
+        # L_0 corresponds to z_stencil_0 (at relative coordinate 0)
+        # L_plus_1 corresponds to z_stencil_plus_1 (at relative coordinate +1)
+        
+        L_minus_1 = y_rel * (y_rel - 1.0) / 2.0
+        L_0 = 1.0 - y_rel**2  # Simplified from -(y_rel + 1.0) * (y_rel - 1.0)
+        L_plus_1 = y_rel * (y_rel + 1.0) / 2.0
+        
+        return L_minus_1 * z_stencil_minus_1 + L_0 * z_stencil_0 + L_plus_1 * z_stencil_plus_1
     
     
     # Check if top orders are too close to the edge and if so then don't use these
     def check_top_orders_proximity(self):
         something_changed = False
         
-        max_idx = min(20 + 1, len(self.calib_data_dynamic)) # no point in checking all orders (ignore bottom)
+        max_idx = min(10 + 1, len(self.calib_data_dynamic)) # no point in checking all orders (ignore bottom)
         for order_idx in range(max_idx):
             
             if self.ignore_top_orders and self.if_needs_cutting(order_idx):
@@ -2423,24 +2621,20 @@ class calibration_window():
             
             if something_changed:
                 self.update_spectrum(force_scale = True)
-                
             
-            # TODO for v3: think through the cases of different length input bounds and 
-            # implement edge cutting
+            # TODO for v3: think through the cases of different length input bounds
+            
     
     # Check if order is too close to top edge of image
     def if_needs_cutting(self, order_idx):
-        
         # Get topmost point's y-coordinate
         top = min(self.calib_data_dynamic[order_idx].ylist) # min because coordinate increases towards bottom
-        if order_idx >= len(self.calib_data_dynamic) - 1: # last order (bottom)
-            second = min(self.calib_data_dynamic[order_idx - 1].ylist)
-        else: # take next order
-            second = min(self.calib_data_dynamic[order_idx + 1].ylist)
+        
+        # Get radius over which to integrate given order
+        radius = self.get_order_radius(order_idx)
         
         # If pixel value is lower because of image clipping then the order needs to be cut
-        dy = abs(second - top)
-        if top < dy / 2:
+        if top - radius < 0:
             return True
         else:
             return False
@@ -2488,11 +2682,11 @@ def integrate_order_width(photo_array, x_pixel, y_pixel, width = 1, use_weights 
         return photo_array[y_pixel, x_pixel] # x and y have to be switched (somewhy)
     
     integral = 0
-    x_pixel = clip(x_pixel, 0, photo_array.shape[0] - 1)
+    x_pixel = clip(x_pixel, 0, self.max_x_idx)
     idx_lower = math.floor(width / 2)
     idx_higher = math.ceil(width / 2) # range omits last value
     for y_idx in range(y_pixel - idx_lower, y_pixel + idx_higher):
-        y_idx = clip(y_idx, 0, photo_array.shape[0] - 1)
+        y_idx = clip(y_idx, 0, self.max_y_idx)
         
         gaussian_weight = 1
         if use_weights:
@@ -2584,7 +2778,21 @@ def get_polynomial_points(order, arr_length, flip = False):
     
     return curve_array, poly_coefs
 
+# Take the x and y values and get quadratic fn for them. Then calculate the y at x.
+def simple_quadratic_interpolate(x, x_array, y_array):
+    '''
+    from scipy.interpolate import interp1d
     
+    # Create linear interpolator with extrapolation enabled
+    linear_interp = interp1d(x_array, y_array, kind='quadratic', fill_value='extrapolate', assume_sorted=False)
+    
+    # Interpolate multipliers at the spectrum wavelengths
+    y = linear_interp(x)
+    '''
+    coefs = np.polynomial.polynomial.polyfit(x_array, y_array, 2)
+    y = np.polynomial.polynomial.polyval(x, coefs)
+    return y
+
 
 ##############################################################################################################
 # Utility functions
