@@ -1,9 +1,20 @@
 # Author: Jasper Ristkok
-# v1.0
+# v1.1
 
-# Code to batch-convert all echellograms (photos) in a folder to spectrum using
-# the calibration data from _Echellogram-to-spectrum-calibration.py
+'''
+Code to batch-convert all echellograms (photos) in a folder to spectrum using
+the calibration data from _Echellogram-to-spectrum-calibration.py
+The code assumes that the calibration file is formatted correctly.
 
+Inputs:
+    * _Calibration_data.json
+    * _Correction_multipliers.csv (optional)
+
+Outputs:
+    * spectra in _Raw_spectra folder OR in _Corrected_spectra folder
+    Folder name depends on whether _Correction_multipliers.csv exists
+
+'''
 
 ##############################################################################################################
 # CONSTANTS
@@ -12,21 +23,21 @@
 # If working_path is None then the same folder will be used for all inputs and outputs where the code is executed
 # If you aren't using Windows then paths should have / instead of \\ (double because \ is special character in strings)
 working_path = None
-
-system_path_symbol = '\\' # / for Unix, code checks for it later
+system_path_symbol = '\\' # Gets checked later
 
 ##############################################################################################################
 # IMPORTS
 ##############################################################################################################
 
-import numpy as np
 import math
 import os
 import re # regex
 import json
-from PIL import Image as PILImage
 import platform
 
+import numpy as np
+from PIL import Image as PILImage
+from scipy.interpolate import interp1d
 
 ##############################################################################################################
 # DEFINITIONS
@@ -43,15 +54,32 @@ def main_program():
     calibration_data = load_calibration_data()
     if calibration_data is None:
         raise Exception('No calibration data!')
+        
+    # Get the output spectrum wavelengths (used here for interpolation)
+    wavelengths = get_spectrum_wavelengths(calibration_data)
     
-    files = get_files_in_folder(working_path)
+    # If folder contains spectral sensitivity multipliers then it's written into this variable
+    multipliers = get_correction_multipliers(wavelengths)
+    
+    # Create folder for output, name depends on whether correction file exists
+    create_folder(multipliers)
+    
+    files = get_photos_in_folder(working_path)
+    count = 0
     for filename in files:
         try:
-            process_photo(filename, calibration_data)
+            process_photo(filename, calibration_data, wavelengths, multipliers)
         except Exception as e:
             print(e)
             print_crash_tree(e)
-            
+        
+        # Feedback on progress
+        count += 1
+        if (count % 20) == 0:
+            print(filename + ' done')
+    
+    
+    print('Program finished')
     
 
 ##############################################################################################################
@@ -64,7 +92,7 @@ def get_path():
     
     # root path as the location where the python script was executed from 
     # (put the script .py file into the folder with the Echellograms)
-    global system_path_symbol, working_path
+    global working_path, system_path_symbol
     
     # Get OS name for determining path symbol
     if platform.system() == 'Windows':
@@ -95,7 +123,7 @@ def load_calibration_data():
     return calibration_data
 
 # Get all .tif files in folder
-def get_files_in_folder(path):
+def get_photos_in_folder(path):
     
     filenames = [f for f in os.listdir(working_path) if os.path.isfile(os.path.join(working_path, f))]
     if len(filenames) == 0:
@@ -112,49 +140,117 @@ def load_photo(filepath):
     return imArray
 
 
+# Return an array of wavelengths for the spectrum
+def get_spectrum_wavelengths(calibration_data):
+    wavelengths = []
+    
+    # Compile pixels and thus wavelengths from the photo with all diffraction orders
+    # Iterate over orders backwards because they are sorted by order nr (top to bottom)
+    for order_idx in range(len(calibration_data['dynamic']) - 1, -1, -1):
+        
+        # Get bounds for this diffraction order
+        [x_left, x_right] = calibration_data['static'][order_idx]['bounds_px']
+        [wave_start, wave_end] = calibration_data['static'][order_idx]['bounds_wave']
+        
+        # No input with wavelengths, output x-axis as pixel values
+        if (wave_start is None) or (wave_end is None):
+            order_nr = calibration_data['static'][order_idx]['order_nr']
+            raise Exception('Calibration data doesn\'t have wavelength with order: ' + str(order_nr))
+        
+        # integers for indices
+        x_left = int(x_left)
+        x_right = int(x_right)
+        
+        # output x-axis as wavelengths between the order bounds
+        for x_px in range(x_left, x_right + 1):
+            wavelength = linear_regression(x_px, x_left, x_right, wave_start, wave_end)
+            wavelengths.append(wavelength)
+    
+    wavelengths = np.array(wavelengths)
+    return wavelengths
+
+
+# Load correction multipliers from file if it exists, otherwise return None
+def get_correction_multipliers(wavelengths):
+    try:
+        multipliers_array = np.loadtxt(working_path + '_Correction_multipliers.csv', delimiter = ',', skiprows = 1)
+    except:
+        print('_Correction_multipliers.csv not found')
+        return None
+    
+    # Interpolate the multipliers to match the wavelengths of output spectra
+    wavelengths_original = multipliers_array[:, 0]
+    multipliers_original = multipliers_array[:, 1]
+    
+    # Create linear interpolator with extrapolation enabled
+    linear_interp = interp1d(wavelengths_original, multipliers_original,
+        kind='quadratic', fill_value='extrapolate', assume_sorted=False)
+    
+    # Interpolate multipliers at the spectrum wavelengths
+    interpolated_multipliers = linear_interp(wavelengths)
+    return interpolated_multipliers
+
+
+# Create output folder if it doesn't exist
+def create_folder(multipliers):
+    
+    # Get subfolder name depending on whether correction multipliers file exists
+    folder_name = 'Raw_spectra' + system_path_symbol
+    if not multipliers is None:
+        folder_name = 'Corrected_spectra' + system_path_symbol
+    
+    path = working_path + folder_name
+    if not os.path.isdir(path):
+        os.mkdir(path)
+
+
+
 ##############################################################################################################
 # Processing phase
 ##############################################################################################################
 
-def process_photo(filename, calibration_data):
+def process_photo(filename, calibration_data, wavelengths, multipliers):
     filepath = working_path + filename
     photo_array = load_photo(filepath)
     
     # negative values to 0
-    photo_array[photo_array < 0] = 0
+    #photo_array[photo_array < 0] = 0 # keep negatives to avoid noise bias
     
     # Get spectrum x and y values
-    x_values, y_values = compile_spectrum(photo_array, calibration_data)
+    y_values = compile_spectrum(photo_array, calibration_data)
+    
+    # Use spectral sensitivity multipliers
+    y_values = apply_correction(y_values, multipliers)
+    
     
     # save the spectrum into txt file with ; delimiter (same as Sophi nXt)
-    save_spectrum(filename, x_values, y_values)
-
-
+    save_spectrum(filename, wavelengths, y_values, multipliers)
 
 # Get z-values of corresponding x and y values and cut them according to left and right bounds
 def compile_spectrum(photo_array, calibration_data):
-    x_values = []
     z_values = []
     
-    
     nr_pixels = photo_array.shape[0]
-    photo_pixels = np.arange(nr_pixels)
     
     # Compile z-data from the photo with all diffraction orders
     # Iterate over orders backwards because they are sorted by order nr (top to bottom)
     for order_idx in range(len(calibration_data['dynamic']) - 1, -1, -1):
         
         order = calibration_data['dynamic'][order_idx]
-        curve_array, poly_coefs = get_polynomial_points(order, nr_pixels)
+        curve_y, poly_coefs = get_polynomial_points(order, nr_pixels)
         
-        curve_x = photo_pixels
-        curve_y = curve_array
-        curve_y = np.round(curve_y)
+        curve_y = np.round(curve_y) # Convert to y-coordinates/indices
         y_pixels = curve_y.astype(np.int32) # convert to same format as x-values
         
         
         # Get bounds for this diffraction order
         [x_left, x_right] = calibration_data['static'][order_idx]['bounds_px']
+        [wave_start, wave_end] = calibration_data['static'][order_idx]['bounds_wave']
+        
+        # No input with wavelengths, output x-axis as pixel values
+        if (wave_start is None) or (wave_end is None):
+            order_nr = calibration_data['static'][order_idx]['order_nr']
+            raise Exception('Calibration data doesn\'t have wavelength with order: ' + str(order_nr))
         
         # Default bounds as first px and last px
         if x_left is None:
@@ -162,48 +258,36 @@ def compile_spectrum(photo_array, calibration_data):
         if x_right is None:
             x_right = nr_pixels - 1
         
+        # integers for indices
+        x_left = int(x_left)
+        x_right = int(x_right)
+        
+        # Save px only if it's between left and right bounds
         # get z-values corresponding to the interpolated pixels on the order curve
-        for idx2 in photo_pixels:
+        for idx2 in range(x_left, x_right + 1):
+            x_px = idx2 # photo pixels have same values as indices
+            y_px = y_pixels[idx2]
             
-            # Save px only if it's between left and right bounds
-            x_px = curve_x[idx2]
+            # Get the width to integrate over (between two diffraction orders)
+            width = 1 
+            center = get_avg_y(calibration_data['dynamic'][order_idx])
+            if order_idx > 0: # check for out of bounds error
+                low = get_avg_y(calibration_data['dynamic'][order_idx - 1])
+                width = (center - low) / 2
+            elif len(calibration_data['dynamic']) > order_idx + 1: # check for out of bounds error
+                high = get_avg_y(calibration_data['dynamic'][order_idx + 1])
+                width = (high - center) / 2
             
-            # Do stuff if point is between bounds
-            if x_left <= x_px <= x_right:
-                y_px = y_pixels[idx2]
-                
-                [wave_start, wave_end] = calibration_data['static'][order_idx]['bounds_wave']
-                
-                # No input with wavelengths, output x-axis as pixel values
-                if (wave_start is None) or (wave_end is None):
-                    raise Exception('Calibration data doesn\'t have wavelength with order: ' + str(order_idx))
-                    
-                
-                # Has input with wavelengths, output x-axis as wavelengths
-                else:
-                    x_value = linear_regression(x_px, x_left, x_right, wave_start, wave_end)
-                    x_values.append(x_value)
-                    
-                
-                # Get the width to integrate over (between two diffraction orders)
-                width = 1 
-                center = get_avg_y(calibration_data['dynamic'][order_idx])
-                if order_idx > 0: # check for out of bounds error
-                    low = get_avg_y(calibration_data['dynamic'][order_idx - 1])
-                    width = (center - low) / 2
-                elif len(calibration_data['dynamic']) > order_idx + 1: # check for out of bounds error
-                    high = get_avg_y(calibration_data['dynamic'][order_idx + 1])
-                    width = (high - center) / 2
-                
-                # very important, otherwise 2.49 and 2.51 will have 150% jump in integral because of rounding
-                width = clip(width, min_v = 3) 
-                
-                
-                # Get z value from Echellogram
-                integral = integrate_order_width(photo_array, x_px, y_px, width = width)
-                z_values.append(integral) # x and y have to be switched (somewhy)
-                
-    return x_values, z_values
+            # very important, otherwise 2.49 and 2.51 will have 150% jump in integral because of rounding
+            width = clip(width, min_v = 3) 
+            
+            
+            # Get z value from Echellogram
+            integral = integrate_order_width(photo_array, x_px, y_px, width = width)
+            z_values.append(integral) # x and y have to be switched (somewhy)
+    
+    return z_values
+
 
 # Gets average y-value of points in order
 def get_avg_y(points):
@@ -212,6 +296,7 @@ def get_avg_y(points):
         array.append(point['y'])
     
     return np.average(array)
+
 
 def gather_points(order_points):
     xlist = []
@@ -249,15 +334,31 @@ def integrate_order_width(photo_array, x_pixel, y_pixel, width = 1, use_weights 
     return integral
 
 
+# Apply spectral sensitivity multipliers
+def apply_correction(y_values, multipliers):
+    if multipliers is None:
+        return y_values
+    
+    # Multiply arrays row by row
+    y_values = np.array(y_values) # convert from list to array
+    corrected_values = y_values * multipliers
+    return corrected_values
+
+
 # save the spectrum into txt file with ; delimiter (same as Sophi nXt)
-def save_spectrum(filename, x_values, y_values):
+def save_spectrum(filename, x_values, y_values, multipliers):
     
     # get filename without .tif
     pattern = r'(.+?)\.tif$'
     regex_result = re.search(pattern, filename)
     identificator = regex_result[1]
     
-    filepath = working_path + identificator + '.txt'
+    # Get subfolder name depending on whether correction multipliers file exists
+    folder_name = 'Raw_spectra' + system_path_symbol
+    if not multipliers is None:
+        folder_name = 'Corrected_spectra' + system_path_symbol
+    
+    filepath = working_path + folder_name + identificator + '.txt'
     
     array = np.column_stack((x_values, y_values))
     np.savetxt(filepath, array, delimiter = ';', fmt = "%.8f")
