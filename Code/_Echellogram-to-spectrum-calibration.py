@@ -31,6 +31,13 @@ series_filename = None
 average_photos_nr = 20
 
 
+# wavelength_calculation_coefficients is gained by fitting quadratic fn to every order in Sophi nXt output spectrum for sample 492.
+# Since the sample spectrum had shifted (misaligned) then self.origin_shift_right corrects the misalignment.
+# self.origin_shift_right makes sure the spectral lines have correct wavelengths when using the coefficients.
+# Sample 492 is ideally aligned with total_shift_right = 0. Now total_shift_right shows the shift within your experimental campaign.
+origin_shift_right = 7.2
+# Actual 492 spectrum: relative up shift -4.75
+# 2025.08.12 calibration day relative shift is 1.1
 
 # If working_path is None then the same folder will be used for all inputs and outputs where the code is executed
 # Otherwise the defined custom paths are used that you define here
@@ -151,6 +158,8 @@ if dbg:
 
 
 def main_program():
+    print('Program log will appear here')
+    
     
     # Code is executed from folder with Echellograms
     if working_path is None:
@@ -310,21 +319,17 @@ def output_averaged_photo(average_array, output_path, sample_name, exif_data = {
 
 def process_photo(photo_array):
     
-    # negative values to 0
-    #photo_array[photo_array < 0] = 0
-    
     # Load calibration data if it exists
-    calibr_data, bounds_input_array = load_calibration_data()
+    calibr_data = load_calibration_data()
     
     # Save averaged Echellogram as an array
     if script_manual_mode:
         np.savetxt(output_path + 'image_array.csv', photo_array, delimiter = ',')
     
-    return photo_array, calibr_data, bounds_input_array
+    return photo_array, calibr_data
 
 def load_calibration_data():
     calibration_data = None
-    bounds_input_array = None
     
     # calibration done previously, load that data
     json_filenames = get_folder_files_pattern(input_data_path, pattern = r'^_Calibration_data.*\.json$')
@@ -334,22 +339,14 @@ def load_calibration_data():
             print('Warning! More than one .json calibration file detected.')
         
         json_filename = json_filenames[0]
-        with open(input_data_path + json_filename, 'r') as file:
+        filepath = input_data_path + json_filename
+        with open(filepath, 'r') as file:
             try:
                 calibration_data = json.load(file)
             except: # e.g. file is empty
-                pass
+                print('Error! Failed to load {filepath}')
     
-    
-    bounds_filenames = get_folder_files_pattern(working_path, pattern = r'^_Vertical_points.*\.csv$')
-    if len(bounds_filenames) > 0:
-        if len(bounds_filenames) > 1:
-            print('Warning! More than one .csv bounds data file detected.')
-        
-        bounds_filename = bounds_filenames[0]
-        bounds_input_array = np.loadtxt(input_data_path + bounds_filename, delimiter = ',', skiprows = 1)
-    
-    return calibration_data, bounds_input_array
+    return calibration_data
 
 
 ###########################################################################################
@@ -358,15 +355,13 @@ def load_calibration_data():
 
 # Generic point class, a point on a graph
 class point_class():
-    def __init__(self, x, y = None, z = None, group = None):
+    def __init__(self, x, y = None):
         
         if x is None:
             raise ValueError('No x data')
         
         self.x = x
         self.y = y
-        self.z = z
-        self.group = group
     
     def distance(self, point2):
         sum = (point2.x - self.x) ** 2
@@ -376,80 +371,59 @@ class point_class():
                 raise Exception('Dimensions of points don\'t match')
             sum += (point2.y - self.y) ** 2
         
-        if not (self.z is None):
-            if point2.z is None:
-                raise Exception('Dimensions of points don\'t match')
-            sum += (point2.z - self.z) ** 2
-        
         return np.sqrt(sum)
 
-class static_calibration_data():
-    def __init__(self, order_nr = -1, existing_data = None):
-        self.order_nr = order_nr
-        self.bounds_px = [None, None] # pixel index after shift
-        self.bounds_wave = [None, None] # wavelengths after shift
-        self.bounds_middle = [None, None] # 3rd pixel and 3rd wavelength from the middle of the order after shift
-        self.bounds_px_original = [None, None] # pixel index from input file
-        self.bounds_wave_original = [None, None] # wavelengths from input file
-        self.bounds_middle_orig = [None, None] # 3rd pixel and 3rd wavelength from the middle of the order
-        self.use_order = True
-        
-        if existing_data:
-            self.load_encode(existing_data)
-    
-    # Convert points into arrays for saving
-    def save_decode(self):
-        static_dict = {}
-        static_dict['order_nr'] = self.order_nr
-        static_dict['bounds_px'] = self.bounds_px
-        static_dict['bounds_wave'] = self.bounds_wave
-        static_dict['bounds_middle'] = self.bounds_middle
-        static_dict['bounds_px_original'] = self.bounds_px_original
-        static_dict['bounds_wave_original'] = self.bounds_wave_original
-        static_dict['bounds_middle_orig'] = self.bounds_middle_orig
-        static_dict['use_order'] = self.use_order
-        
-        return static_dict
-    
-    # Convert saved dictionary into point classes
-    def load_encode(self, existing_data):
-        self.order_nr = existing_data['order_nr']
-        self.bounds_px = existing_data['bounds_px']
-        self.bounds_wave = existing_data['bounds_wave']
-        self.bounds_px_original = existing_data['bounds_px_original']
-        self.bounds_wave_original = existing_data['bounds_wave_original']
-        self.use_order = existing_data['use_order']
-        
-        # backwards compatibility
-        keys = existing_data.keys()
-        if 'bounds_middle' in keys:
-            self.bounds_middle = existing_data['bounds_middle']
-            self.bounds_middle_orig = existing_data['bounds_middle_orig']
-
 # Line of a diffraction order (horizontal), x is horizontal and y vertical pixels
-class order_points():
+class dynamic_calibration_data():
     def __init__(self, image_width = 1, existing_data = None):
         self.image_width = image_width
         self.avg_y = 0
-        #self.xlist = None
-        #self.ylist = None
-        #self.points = []
+        self.xlist = None
+        self.ylist = None
+        self.points = []
+        self.use_order = True
         
+        # Create 3 points
         if existing_data is None:
-            self.points = [point_class(0, 1, group = 'orders'), 
-                        point_class(self.image_width / 2 - 1, 1, group = 'orders'), 
-                        point_class(self.image_width - 1, 1, group = 'orders')]
-            
+            self.add_points([0, self.image_width / 2 - 1, self.image_width - 1], [1, 1, 1])
         else:
             self.load_encode(existing_data)
         
         self.update()
     
+    # Add a list of points
+    def add_points(self, x_list, y_list):
+        for idx, x in enumerate(x_list):
+            y = y_list[idx]
+            self.add_point(x, y, to_update = False)
+        self.update()
     
+    # Create a point instance
+    def add_point(self, x, y, to_update = True):
+        self.points.append(point_class(x, y))
+        if to_update:
+            self.update()
+    
+    # Replace the points. Assumes that 3 points already exist.
+    def overwrite_points(self, x_list, y_list):
+        for idx, x in enumerate(x_list):
+            y = y_list[idx]
+            self.points[idx] = point_class(x, y)
+        self.update()
+    
+    # Create x and y coordinate lists of point instances
     def update(self):
+        self.sort_by_x()
         self.create_lists()
         self.avg_y = np.average(self.ylist)
     
+    # Sort points by ascending x value
+    def sort_by_x(self):
+        x_values = [obj.x for obj in self.points]
+        sorted_idx = np.argsort(x_values)
+        self.points = [self.points[idx] for idx in sorted_idx]
+        
+    # These are already sorted in self.sort_by_x()
     def create_lists(self):
         self.xlist = self.to_list(self.points, 'x')
         self.ylist = self.to_list(self.points, 'y')
@@ -464,25 +438,18 @@ class order_points():
     
     # Convert points into arrays for saving
     def save_decode(self):
+        dynamic_dict = {}
+        dynamic_dict['use_order'] = self.use_order
+        dynamic_dict['x'] = self.xlist
+        dynamic_dict['y'] = self.ylist
         
-        # Iterate over points and decode them
-        points_array = []
-        for point in self.points:
-            point_dict = {}
-            point_dict['x'] = point.x
-            point_dict['y'] = point.y
-            
-            points_array.append(point_dict)
-        
-        return points_array
+        return dynamic_dict
     
     # Convert saved dictionary into point classes
     def load_encode(self, existing_data):
+        self.use_order = existing_data['use_order']
         self.points = []
-        
-        # Iterate over points and encode them into classes
-        for point_dict in existing_data:
-            self.points.append(point_class(point_dict['x'], y = point_dict['y']))
+        self.add_points(existing_data['x'], existing_data['y'])
         
         self.update()
     
@@ -509,6 +476,9 @@ class calibration_window():
         # Load data from the folder and initialize program with it
         self.load_folder(working_path)
         
+        # Check if drawn orders amount corresponds with bounds_data
+        self.check_order_amount_match()
+        
         # Draw tkinter window elements (needs to be after drawing the plots)
         self.pack_window_elements()
         
@@ -533,8 +503,8 @@ class calibration_window():
     # Gets also called on path change (new folder might contain different calibration data/bounds file). 
     def reset_class_variables_soft(self):
         
+        self.origin_shift_right = origin_shift_right
         self.first_order_nr = None
-        self.static_idx_offset = 0 # difference between first_order_nr and smallest order nr in static bounds data
         self.total_shift_right = None
         self.total_shift_up = None
         self.total_shift_right_orig = None
@@ -551,15 +521,16 @@ class calibration_window():
         self.cumulative_sum = None # for faster vertical integral calculation
         self.max_x_idx = None
         self.max_y_idx = None
-        self.bounds_input_array = []
         self.order_plot_points = []
         self.order_poly_coefs = []
         self.order_plot_curves = []
         self.order_bound_points = []
         
+        # bounds data (changes with right shift) [[x_left, x_right], ...]
+        self.bounds_px = None
+        
         # Spectrum data
         self.orders_x_pixels = []
-        self.orders_wavelength_coefficients = []
         self.orders_wavelengths = []
         self.orders_intensities = []
         self.spectrum_curve = None
@@ -847,14 +818,9 @@ class calibration_window():
             print('Sample not in input files, found: ' + identificator)
             raise Exception('Sample not in input files, found: ' + identificator)
         
-        photo_array, calibration_data, bounds_input_array = process_photo(average_array)
-        
-        # sort in ascending order nr
-        if not bounds_input_array is None:
-            bounds_input_array = bounds_input_array[bounds_input_array[:, 0].argsort()]
+        photo_array, calibration_data = process_photo(average_array)
         
         self.photo_array = photo_array
-        self.bounds_input_array = bounds_input_array
         
         # Calculate stuff with given array
         self.max_y_idx = self.photo_array.shape[0] - 1
@@ -864,6 +830,9 @@ class calibration_window():
         
         # Initialize first order nr and horizontal shift
         if not calibration_data is None:
+            self.origin_shift_right = calibration_data['origin_shift_right']
+            
+            # Don't overwrite in case user defined these via GUI
             if self.first_order_nr is None:
                 self.first_order_nr = calibration_data['first_order_nr'] # gets overwritten in self.load_static_data()
             if self.total_shift_right is None:
@@ -872,15 +841,15 @@ class calibration_window():
             if self.total_shift_up is None:
                 self.total_shift_up_orig = calibration_data['total_shift_up']
                 self.total_shift_up = self.total_shift_up_orig
+            
         
         # Load input data
         if self.calib_data_dynamic is None: # only initialize diffr orders once after program start/reset
-            self.calib_data_static = []
-            self.calib_data_dynamic = []
             self.load_dynamic_data(calibration_data)
             self.load_static_data(calibration_data)
         
-        self.update_static_idx_offset()
+        self.update_bounds_data()
+        
     
     # Calculate cumulative sum for each column separately for faster integral calculation for spectrum
     # Gemini 2.5 Pro invention (and a good one)
@@ -894,17 +863,18 @@ class calibration_window():
         
             
     def load_dynamic_data(self, calibration_data):
+        self.calib_data_dynamic = []
         
         # initialize calib_data with photo_array bounds for better plotting
         if calibration_data is None:
-            self.calib_data_dynamic.append(order_points(image_width = self.photo_array.shape[0]))
+            self.calib_data_dynamic.append(dynamic_calibration_data(image_width = self.photo_array.shape[0]))
             
         # load saved data
         else:
             
             # Iterate over orders
             for order_raw in calibration_data['dynamic']:
-                self.calib_data_dynamic.append(order_points(existing_data = order_raw))
+                self.calib_data_dynamic.append(dynamic_calibration_data(existing_data = order_raw))
             
             # sort orders by average y values
             self.sort_orders(sort_plots = False)
@@ -913,146 +883,53 @@ class calibration_window():
     # Is meant to be run only once (per folder a.k.a. input files)
     def load_static_data(self, calibration_data):
         
-        # If there's data from file then use that, else use previous calibration data
-        if not self.bounds_input_array is None:
-            
-            self.first_order_nr = int(self.bounds_input_array[:, 0].min()) # assumes that input file has correct data #TODO: v3 check
+        # If there's no previous calibration data, then use original bounds data (end of the script)
+        if calibration_data is None: 
+            print('_Calibration_data*.json missing. Using default bounds data')
+            self.set_feedback('_Calibration_data*.json missing. Using default bounds data', 10000)
+            self.first_order_nr = int(bounds_data[0, 0])
             self.input_order_var.set(str(self.first_order_nr))
-            
-            self.compile_static_data_from_file()
-        
-        
-        # use previous calibration data
-        elif not calibration_data is None: 
-            print('_Vertical_points.csv missing. Using previous calibration data')
-            self.set_feedback('_Vertical_points.csv missing. Using previous calibration data', 10000)
-            
-            # Iterate over orders
-            self.first_order_nr = math.inf
-            for order_raw in calibration_data['static']:
-                order_static_class = static_calibration_data(existing_data = order_raw)
-                self.calib_data_static.append(order_static_class)
-                
-                # Register smallest order nr
-                if order_static_class.order_nr < self.first_order_nr:
-                    self.first_order_nr = order_static_class.order_nr
-            
-            self.input_order_var.set(str(self.first_order_nr))
-            
-            if self.first_order_nr == math.inf:
-                self.set_feedback('first_order_nr couldn\'t be determined from previous calibration data', 15000)
-                raise Exception('first_order_nr couldn\'t be determined from previous calibration data')
-            
-        else:
-            raise Exception('Previous calibration data and vertical points file not found. Can\'t calculate bounds')
-    
-    # (Re)initializes static calibration data (order nrs and bounds). 
-    # Writes into self.calib_data_static only the data that's relevant to drawn orders.
-    # When first order nr or number of drawn orders is changed then this is called again.
-    def compile_static_data_from_file(self): # TODO: v3 check
-        # reset the list, only to contain static data that is relevant for drawn orders
-        self.calib_data_static = []
-        
-        input_array = self.bounds_input_array
-        if input_array is None:
             return
         
-        dynamic_len = len(self.calib_data_dynamic) # nr of drawn curves
-        static_len = input_array.shape[0] # nr of orders in input bounds file
+        # use previous calibration data
+        self.first_order_nr = calibration_data['first_order_nr']
+        self.input_order_var.set(str(self.first_order_nr))
         
-        # Let user know that input data wasn't perfect
-        if dynamic_len != static_len:
-            print(f'Warning! _Vertical_points.csv has {static_len} rows, but there are {dynamic_len} drawn orders.')
-            self.set_feedback(f'Warning! _Vertical_points.csv has {static_len} rows, but there are {dynamic_len} drawn orders.', 15000)
-        
-        # Check if self.first_order_nr is in the file
-        idxs = np.where(input_array[:,0] == self.first_order_nr)[0]
-        if len(idxs) > 0: # There's match
-            idx = idxs[0]
+    
+    
+    # Get the order bounds with the corresponding shift
+    # Sophi has order bounds (px) the same no matter how far right the actual image has shifted. 
+    # I have doubts about that they did the proccess correctly, if Sophi tooltips show the actual data for the given order.
+    def update_bounds_data(self, idx = None):
+        if idx is None:
+            self.bounds_px = bounds_data[:, [1,2]] + self.origin_shift_right + self.total_shift_right
         else:
-            print('ERROR! First order nr not in _Vertical_points.csv')
-            #self.set_feedback('ERROR! First order nr not in _Vertical_points.csv', 15000)
-            raise Exception('ERROR! First order nr not in _Vertical_points.csv')
-            
-        
-        # Iterate over rows in input file array
-        for row_idx in range(idx, static_len):
-            order_nr = int(input_array[row_idx, 0])
-            
-            static_class_instance = static_calibration_data()
-            static_class_instance.order_nr = order_nr
-            
-            px_start = input_array[row_idx, 1]
-            px_end = input_array[row_idx, 2]
-            static_class_instance.bounds_px = [px_start, px_end]
-            static_class_instance.bounds_px_original = [px_start, px_end]
-            
-            # Initialize self.first_order_nr
-            if (self.first_order_nr is None) or (order_nr < self.first_order_nr):
-                self.first_order_nr = order_nr
-            
-            # File contains info about wavelengths
-            if input_array.shape[1] > 3:
-                wave_start = input_array[row_idx, 3]
-                wave_end = input_array[row_idx, 4]
-                
-                static_class_instance.bounds_wave = [wave_start, wave_end]
-                static_class_instance.bounds_wave_original = [wave_start, wave_end]
-            
-            
-            # If you're viewing the code then you can disable the exception throwing, it's here
-            # because ordinary user shouldn't use the program without input wavelengths.
-            else:
-                self.set_feedback('_Vertical_points.csv must contain wavelength columns', 15000)
-                raise Exception('_Vertical_points.csv doesn\'t contain wavelength columns')
-            
-            # File contains also info about middle points
-            if input_array.shape[1] > 5:
-                px_middle = input_array[row_idx, 5]
-                wave_middle = input_array[row_idx, 6]
-                static_class_instance.bounds_middle = [px_middle, wave_middle]
-                static_class_instance.bounds_middle_orig = [px_middle, wave_middle]
-            
-            
-            self.calib_data_static.append(static_class_instance)
-        
-        
-        # There are too few rows in file, copy last file row for last orders 
-        registered_nr = len(self.calib_data_static)
-        if dynamic_len > registered_nr:
-            print('_Vertical_points.csv has less rows than drawn orders. Last row is copied for bottom drawn orders.')
-            self.set_feedback('_Vertical_points.csv has less rows than drawn orders. Last row is copied.', 15000)
-            
-        # In case there has been a shift, recalculate shifted bounds from original bounds
-        for order_idx in range(len(self.calib_data_static)):
-            self.recalculate_bounds(order_idx)
+            self.bounds_px[idx] = bounds_data[idx, [1,2]] + self.origin_shift_right + self.total_shift_right
     
-    # Offset of index between dynamic and static data (drawn order amount not same as in bounds data)
-    def update_static_idx_offset(self):
-        min_static_order_nr = math.inf
-        
-        for data in self.calib_data_static:
-            if data.order_nr < min_static_order_nr:
-                min_static_order_nr = data.order_nr
-        
-        self.static_idx_offset = self.first_order_nr - min_static_order_nr
     
-    # Get static data element corresponding to the dynamic data index
-    def get_static_data(self, dynamic_idx):
-        static_idx = dynamic_idx + self.static_idx_offset
-        max_static_idx = len(self.calib_data_static) - 1
+    # Count the given order_idx in bounds data and apply the offset 
+    # if bounds data starts at self.first_order_nr then offset is 0
+    def get_raw_bounds_data_idx(self, order_idx):
+        min_static_order_nr = int(bounds_data[0,0])
+        offset = self.first_order_nr - min_static_order_nr
+        bounds_data_idx = order_idx + offset
+        return bounds_data_idx
+    
+    # Get static_idx corresponding to order_idx (avoid out of bounds)
+    def get_bounds_data_idx(self, order_idx):
+        bounds_data_idx = self.get_raw_bounds_data_idx(order_idx)
         
-        # Use first or last static data element when out of bounds
-        if static_idx < 0:
-            new_obj = copy.deepcopy(self.calib_data_static[0])
-            new_obj.order_nr += static_idx
-            return new_obj
-        elif static_idx > max_static_idx:
-            new_obj = copy.deepcopy(self.calib_data_static[max_static_idx])
-            new_obj.order_nr += (static_idx - max_static_idx) 
-            return new_obj
-        
-        return self.calib_data_static[static_idx]
+        # Clip to avoid going out of bounds, effectively extrapolating (copying) the bounds
+        bounds_data_idx = clip(bounds_data_idx, min_v = 0, max_v = bounds_data.shape[0] - 1)
+        return bounds_data_idx
+    
+    # Get the order nr in bounds_data corresponding to the order_idx drawn order
+    def get_bounds_data_order_nr(self, order_idx):
+        bounds_data_idx = self.get_bounds_data_idx(order_idx)
+        return bounds_data[bounds_data_idx, 0]
+    
+    def get_order_nr_from_idx(self, order_idx):
+        return self.first_order_nr + order_idx
     
     # Save calibration curves and the corresponding points
     def save_data(self, path = None, button_call = True):
@@ -1061,22 +938,17 @@ class calibration_window():
         
         # decode objects into dictionary in certain key order
         save_dict = {}
+        save_dict['origin_shift_right'] = self.origin_shift_right
         save_dict['first_order_nr'] = self.first_order_nr
         save_dict['total_shift_right'] = self.total_shift_right
         save_dict['total_shift_up'] = self.total_shift_up
-        save_dict['static'] = []
         save_dict['dynamic'] = []
         
         
         # Iterate over orders
         for order_idx, order in enumerate(self.calib_data_dynamic):
-            
-            points_array = order.save_decode()
-            save_dict['dynamic'].append(points_array)
-        
-        for order in self.calib_data_static:
-            static_dict = order.save_decode()
-            save_dict['static'].append(static_dict)
+            dynamic_dict = order.save_decode()
+            save_dict['dynamic'].append(dynamic_dict)
         
         
         # Save as JSON readable output into input folder, _ in front to find easily among Echellograms
@@ -1122,15 +994,10 @@ class calibration_window():
             return
         
         
-        # First order nr changes, so re-compile self.calib_data_static
+        # First order nr changes, so re-compile bounds data
         if (self.first_order_nr != first_order_nr):
-            
-            # Check that the entered value isn't too small
-            file_first_order_nr = int(self.bounds_input_array[:, 0].min()) # TODO: v3 check
-            if first_order_nr >= file_first_order_nr:
-                self.first_order_nr = first_order_nr
-                self.compile_static_data_from_file()
-                self.update_static_idx_offset()
+            self.first_order_nr = first_order_nr
+            self.update_bounds_data()
                 
             
             
@@ -1338,22 +1205,16 @@ class calibration_window():
         
         all_points = np.loadtxt(input_data_path + '_Order_points.csv', delimiter=',', skiprows = 1)
         
-        for order_idx in range(len(self.calib_data_dynamic)):
-            order = self.calib_data_dynamic[order_idx]
+        self.calib_data_dynamic = []
+        for idx in range(all_points.shape[0]):
+            x_list = all_points[idx, [0, 2, 4]]
+            y_list = all_points[idx, [1, 3, 5]]
             
-            # get order_nr row index from data
-            order_nr = self.get_static_data(order_idx).order_nr
-            row_idxs = np.where(all_points[:,0] == order_nr)[0] # get indices of rows where order nr is the same
+            order = dynamic_calibration_data()
+            order.overwrite_points(x_list, y_list)
             
-            # Get bounds
-            if len(row_idxs) > 0: # There's match
-                row_idx = row_idxs[0]
-                order.points[0].x = all_points[row_idx, 1]
-                order.points[0].y = all_points[row_idx, 2]
-                order.points[1].x = all_points[row_idx, 3]
-                order.points[1].y = all_points[row_idx, 4]
-                order.points[2].x = all_points[row_idx, 5]
-                order.points[2].y = all_points[row_idx, 6]
+            self.calib_data_dynamic.append(order)
+        
         
         self.update_all()
         self.set_feedback('Order points loaded')
@@ -1377,7 +1238,7 @@ class calibration_window():
             file.write('Order_nr,Coef1,Coef2,Coef3...\n') # headers
             
             for order_idx in range(len(self.calib_data_dynamic)):
-                order_nr = self.get_static_data(order_idx).order_nr
+                order_nr = self.get_order_nr_from_idx(order_idx)
                 coefs = self.order_poly_coefs[order_idx]
                 file.write(str(order_nr))
                 
@@ -1393,7 +1254,7 @@ class calibration_window():
             file.write('Order_nr,Point0_x,Point0_y,Point1_x,Point1_y,Point2_x,Point2_y\n') # headers
             
             for order_idx in range(len(self.calib_data_dynamic)):
-                order_nr = self.get_static_data(order_idx).order_nr
+                order_nr = self.get_order_nr_from_idx(order_idx)
                 file.write(str(order_nr))
                 
                 points = self.calib_data_dynamic[order_idx].points
@@ -1417,20 +1278,16 @@ class calibration_window():
     # Overwrite the order points with the ones calculated from polynomials
     def orders_tidy(self):
         start_x = 35
-        center_x = math.floor(self.photo_array.shape[0] / 2)
-        end_x = self.photo_array.shape[0] - 35
+        center_x = math.floor(self.photo_array.shape[1] / 2)
+        end_x = self.photo_array.shape[1] - 35
         
         for idx in range(len(self.calib_data_dynamic)):
             order = self.calib_data_dynamic[idx]
             
-            order.points[0].x = start_x
-            order.points[0].y = poly_func_value(start_x, self.order_poly_coefs[idx])
-            order.points[1].x = center_x
-            order.points[1].y = poly_func_value(center_x, self.order_poly_coefs[idx])
-            order.points[2].x = end_x
-            order.points[2].y = poly_func_value(end_x, self.order_poly_coefs[idx])
+            x_list = [start_x, center_x, end_x]
+            y_list = np.polynomial.polynomial.polyval(order.xlist, self.order_poly_coefs[idx])
+            order.overwrite_points(x_list, y_list)
             
-    
         self.update_all()
     
     def add_order(self):
@@ -1439,11 +1296,9 @@ class calibration_window():
         self.show_orders = True
         self.hide_unhide_orders()
         
-        diffr_order = order_points(self.photo_array.shape[0])
+        diffr_order = dynamic_calibration_data(self.photo_array.shape[0])
         self.calib_data_dynamic.append(diffr_order)
         
-        # Recompile self.calib_data_static with relevant data
-        self.compile_static_data_from_file()
         # Calculate the bounds for that order
         #self.initialize_bounds(self.selected_order_idx)
         
@@ -1487,12 +1342,9 @@ class calibration_window():
         self.hide_unhide_orders()
         
         selected_idx = self.selected_order_idx
-        order_nr = self.get_static_data(selected_idx).order_nr
+        order_nr = self.get_order_nr_from_idx(selected_idx)
         
         del self.calib_data_dynamic[selected_idx]
-        
-        # Recompile self.calib_data_static with relevant data
-        self.compile_static_data_from_file()
         
         # Deselect the order
         self.selected_order_nr = None
@@ -1637,7 +1489,7 @@ class calibration_window():
             order = self.calib_data_dynamic[idx]
             
             # iterate over points in order, save best point
-            for idx2 in range(len(order.points)):
+            for idx2 in range(len(order.xlist)):
                 distance = order.points[idx2].distance(click_point)
                 if distance < min_distance:
                     best_order_idx = idx
@@ -1658,7 +1510,7 @@ class calibration_window():
             self.update_one_order_curve_color(self.selected_order_idx, set_color = 'r')
             
             self.selected_order_idx = best_order_idx
-            self.selected_order_nr = self.get_static_data(best_order_idx).order_nr
+            self.selected_order_nr = self.get_order_nr_from_idx(best_order_idx)
             
             self.update_one_order_curve_color(best_order_idx, set_color = 'white')
             self.set_feedback('Order ' + str(best_order_idx + self.first_order_nr) + ' selected')
@@ -1684,10 +1536,9 @@ class calibration_window():
                 min_distance = distance
                 best_point = order.points[idx]
         
-        #print('best: ', best_point.group, best_point_idx, best_point.x, best_point.y)
+        #print('best: ', best_point_idx, best_point.x, best_point.y)
         
         # edit point
-        click_point.group = best_point.group
         self.calib_data_dynamic[self.selected_order_idx].points[best_point_idx] = click_point # TODO: delete hack 
         self.calib_data_dynamic[self.selected_order_idx].update()
         
@@ -1695,8 +1546,6 @@ class calibration_window():
         # sort orders by average y values, this might change order nrs
         self.sort_orders()
         
-        # Calculate the bounds for that order
-        self.recalculate_bounds(self.selected_order_idx)
         
         # TODO: update only the selected order and all bounds
         self.update_order_curves()
@@ -1752,8 +1601,8 @@ class calibration_window():
                 for point in order.points:
                     point.x += shift_amount # shift right
             
-            self.recalculate_bounds(order_idx, last_shift = shift_amount)
-            
+        
+        self.update_bounds_data()
         
         self.set_feedback('Orders shifted right by ' + str(shift_amount) + ' px')
         self.set_feedback(f'New total shift right: {self.total_shift_right}')
@@ -1768,51 +1617,6 @@ class calibration_window():
             self.update_spectrum(autoscale = True)
     
     
-    def recalculate_bounds(self, order_idx, last_shift = 0): # TODO for v3: check middle px and wl calculations
-        static_data = self.get_static_data(order_idx)
-        static_idx = order_idx + self.static_idx_offset
-        max_static_idx = len(self.calib_data_static) - 1
-        
-        # Short-circuit the function if there's no need to properly calculate stuff again
-        if (self.total_shift_right == 0) and (last_shift == 0):
-            return static_data.bounds_px
-        
-        
-        # shift order bounds (pixels)
-        [orig_px_left, orig_px_right] = static_data.bounds_px_original
-        left_px = clip(orig_px_left + self.total_shift_right, 0, self.max_x_idx)
-        right_px = clip(orig_px_right + self.total_shift_right, 0, self.max_x_idx)
-        
-        [orig_px_middle, orig_wave_middle] = static_data.bounds_middle_orig
-        [px_middle, wave_middle] = static_data.bounds_middle
-        
-        if not px_middle is None:
-            px_middle = clip(orig_px_middle + self.total_shift_right, 0, self.max_x_idx)
-        
-        # Shift wavelengths. Under normal conditions this isn't done because wavelenghts should be locked to the bounds.
-        # If self.shift_wavelengths == True then wavelengths are locked to order curves, otherwise to pixels on image
-        if not self.shift_wavelengths:
-            [orig_wave_left, orig_wave_right] = static_data.bounds_wave_original
-            
-            # TODO: wavelength changes according to quadratic fn
-            left_wave = linear_regression(left_px, orig_px_left, orig_px_right, orig_wave_left, orig_wave_right)
-            right_wave = linear_regression(right_px, orig_px_left, orig_px_right, orig_wave_left, orig_wave_right)
-            
-            # Read from out of bounds indices but don't write to avoid double calculations on e.g. index 0
-            if (static_idx >= 0) and (static_idx <= max_static_idx):
-                self.calib_data_static[static_idx].bounds_wave = [left_wave, right_wave]
-                
-            
-            if not wave_middle is None:
-                wave_middle = linear_regression(px_middle, orig_px_left, orig_px_middle, orig_wave_left, orig_wave_middle)
-        
-        # overwrite previous values
-        # Read from out of bounds indices but don't write to avoid double calculations on e.g. index 0
-        if (static_idx >= 0) and (static_idx <= max_static_idx):
-            self.calib_data_static[static_idx].bounds_px = [left_px, right_px]
-            self.calib_data_static[static_idx].bounds_middle = [px_middle, wave_middle]
-        
-        return [left_px, right_px]
     
     
     # Reads total shift up and right and resets the orders location, so that total shift is 0
@@ -1830,7 +1634,7 @@ class calibration_window():
         self.update_spectrum_data()
         self.update_spectrum(autoscale = True)
         
-        self.set_feedback(f'Shifts reset. Relative shifts (up, right): {up}, {right}')
+        self.set_feedback(f'Shifts reset. Relative shifts (up, right): {-up}, {-right}')
         self.set_feedback(f'New total shifts (up, right): {self.total_shift_up}, {self.total_shift_right}')
         
     
@@ -1963,7 +1767,7 @@ class calibration_window():
             self.draw_bounds(order_idx)
     
     def draw_bounds(self, order_idx):
-        x_start, x_end, y_start, y_end = self.calculate_bounds(order_idx, initialize_x = True)
+        x_start, x_end, y_start, y_end = self.calculate_bounds(order_idx)
         
         bound_points, = self.plot_ax.plot([x_start, x_end], [y_start, y_end], color = 'k', marker = 'x', linestyle = '', markersize = 2)
         self.order_bound_points.append(bound_points)
@@ -2088,8 +1892,8 @@ class calibration_window():
             self.order_plot_curves[order_idx].set_ydata(curve_array)
             
             # Calculate the new bounds for that order
-            self.recalculate_bounds(order_idx)
-            #self.initialize_bounds(order_idx)
+            self.update_bounds_data(idx = order_idx)
+            
             
             # points
             self.order_plot_points[order_idx].set_xdata(order.xlist)
@@ -2110,7 +1914,7 @@ class calibration_window():
             
     # Re-draw bounds
     def update_one_bounds(self, order_idx):
-        x_start, x_end, y_start, y_end = self.calculate_bounds(order_idx, initialize_x = True)
+        x_start, x_end, y_start, y_end = self.calculate_bounds(order_idx)
         self.order_bound_points[order_idx].set_xdata([x_start, x_end])
         self.order_bound_points[order_idx].set_ydata([y_start, y_end])
         
@@ -2157,41 +1961,31 @@ class calibration_window():
     #######################################################################################
     
     
-    def calculate_all_bounds(self, initialize_x = False):
-        for idx in range(len(self.calib_data_dynamic)):
-            self.calculate_bounds(idx, initialize_x = initialize_x)
-    
-    def calculate_bounds(self, order_idx, initialize_x = False):
-        order = self.calib_data_dynamic[order_idx]
-        [px_start, px_end] = self.get_static_data(order_idx).bounds_px
+    def check_order_amount_match(self):
+        dynamic_len = len(self.calib_data_dynamic) # nr of drawn curves
+        static_len = bounds_data.shape[0] # nr of orders in bounds data
         
-        if initialize_x or (px_start is None) or (px_end is None):
-            [px_start, px_end] = self.recalculate_bounds(order_idx) #self.initialize_bounds(order_idx)
+        # Let user know if drawn orders amount doesn't match with bounds data
+        if dynamic_len != static_len:
+            print(f'Warning! Bounds data has {static_len} rows, but there are {dynamic_len} drawn orders.')
+            self.set_feedback(f'Warning! Bounds data has {static_len} rows, but there are {dynamic_len} drawn orders.', 10000)
+        
+    
+    
+    def calculate_all_bounds(self, initialize_x = False):
+        for order_idx in range(len(self.calib_data_dynamic)):
+            self.calculate_bounds(order_idx)
+    
+    def calculate_bounds(self, order_idx):
+        order = self.calib_data_dynamic[order_idx]
+        static_idx = self.get_bounds_data_idx(order_idx)
+        [px_start, px_end] = self.bounds_px[static_idx]
         
         coefs = np.polynomial.polynomial.polyfit(order.xlist, order.ylist, 2)
         y_start = poly_func_value(px_start, coefs)
         y_end = poly_func_value(px_end, coefs)
         
         return px_start, px_end, y_start, y_end
-    
-    
-    def shift_order_nrs(self, shift_amount = 0):
-        
-        if shift_amount == 0:
-            return
-        
-        for order_idx in range(len(self.calib_data_dynamic)):
-            order = self.get_static_data(order_idx)
-            order.order_nr += shift_amount
-        
-        
-    def get_idx_by_order_nr(self, order_nr):
-        for order_idx in range(len(self.calib_data_dynamic)):
-            order = self.get_static_data(order_idx)
-            if order.order_nr == order_nr:
-                return order_idx
-        return None
-    
     
     
     # Assumes that each order instance has been updated (avg_y is correct)
@@ -2228,7 +2022,7 @@ class calibration_window():
     def get_spectrum_order_nrs(self):
         order_nrs_list = []
         for order_idx in range(len(self.calib_data_dynamic) - 1, -1, -1): # reverse order
-            order_nr = self.get_static_data(order_idx).order_nr
+            order_nr = self.get_order_nr_from_idx(order_idx)
             order_nrs_list.append(np.full(len(self.orders_wavelengths[order_idx]), order_nr))
         
         order_nrs = np.concatenate(order_nrs_list)
@@ -2244,9 +2038,6 @@ class calibration_window():
     def update_order_spectrum_data(self, order_idx):
         # Get x_pixel values between bounds (e.g. array of ints from 480 to 701)
         self.update_spectrum_data_list(order_idx, self.orders_x_pixels, self.calc_order_x_pixels)
-        
-        # Calculate coefficients which are used to convert px => wavelength
-        self.update_spectrum_data_list(order_idx, self.orders_wavelength_coefficients, self.calc_order_wavelength_coefs)
         
         # Get wavelengths corresponding to the x_pixels
         self.update_spectrum_data_list(order_idx, self.orders_wavelengths, self.calc_order_wavelengths)
@@ -2273,45 +2064,28 @@ class calibration_window():
             raise Exception(f'calc_order_x_pixels() | order_idx out of bounds: {order_idx}')
         
         # Get bounds for this diffraction order
-        [x_left, x_right] = self.get_static_data(order_idx).bounds_px
-        
-        # Default bounds as first px and last px
-        if x_left is None:
-            x_left = 0
-        if x_right is None:
-            x_right = self.max_x_idx
+        static_idx = self.get_bounds_data_idx(order_idx)
+        [x_left, x_right] = self.bounds_px[static_idx]
         
         px_values = np.arange(x_left, x_right + 1, dtype = int)
         return px_values
     
-    # Calculate coefficients for calculating px => wl
-    def calc_order_wavelength_coefs(self, order_idx):
-        if order_idx > len(self.calib_data_dynamic):
-            raise Exception(f'calc_order_wavelength_coefs() | order_idx out of bounds: {order_idx}')
-        
-        # Take bounds from (latest aka shifted) order points class
-        [px_start, px_end] = self.get_static_data(order_idx).bounds_px
-        [wave_start, wave_end] = self.get_static_data(order_idx).bounds_wave
-        [px_middle, wave_middle] = self.get_static_data(order_idx).bounds_middle
-        
-        # Do linear regression and find the wavelength of x_px
-        if (px_middle is None) or (wave_middle is None):
-            linear_coefs = np.polynomial.polynomial.polyfit([px_start, px_end], [wave_start, wave_end], 1)
-            return linear_coefs
-        
-        # Use quadratic fn
-        else:
-            poly_coefs = np.polynomial.polynomial.polyfit([px_start, px_middle, px_end], [wave_start, wave_middle, wave_end], 2)
-            return poly_coefs
-    
-    # Calculates the wavelengths of the pixels on a given order with the coefficients (no matter if linear or quadratic).
+    # Calculates the wavelengths of the pixels on a given order with the coefficients from wavelength_calculation_coefficients.
     def calc_order_wavelengths(self, order_idx):
         if order_idx > len(self.calib_data_dynamic):
             raise Exception(f'calc_order_wavelengths() | order_idx out of bounds: {order_idx}')
         
+        order_nr = self.get_order_nr_from_idx(order_idx)
         x_array = self.orders_x_pixels[order_idx]
-        coefs = self.orders_wavelength_coefficients[order_idx]
-        wavelengths = np.polynomial.polynomial.polyval(x_array, coefs)
+        
+        if order_nr == 131:
+            pass
+        
+        shift_amount = 0
+        if self.shift_wavelengths:
+            shift_amount = self.origin_shift_right + self.total_shift_right
+        
+        wavelengths = order_px_to_wavelength(order_nr, x_array, horizontal_shift = shift_amount)
         return wavelengths
     
     # Calculates the wavelengths of the pixels on a given order with the coefficients (no matter if linear or quadratic).
@@ -2573,35 +2347,28 @@ class calibration_window():
     def check_top_orders_proximity(self):
         something_changed = False
         
-        
-        max_idx = min(10 + 1, len(self.calib_data_dynamic)) # no point in checking all orders (ignore bottom)
+        max_idx = min(20 + 1, len(self.calib_data_dynamic)) # no point in checking all orders (ignore bottom)
         for order_idx in range(max_idx):
-            static_idx = order_idx + self.static_idx_offset
-            max_static_idx = len(self.calib_data_static) - 1
             
-            # Don't write to out of bound indices to avoid double calculations on e.g. index 0
-            if (static_idx >= 0) and (static_idx <= max_static_idx):
+            if self.ignore_top_orders and self.if_needs_cutting(order_idx):
+                if self.calib_data_dynamic[order_idx].use_order:
+                    something_changed = True 
                 
-                if self.ignore_top_orders and self.if_needs_cutting(order_idx):
-                    if self.calib_data_static[static_idx].use_order:
-                        something_changed = True 
-                    
-                    
-                    self.calib_data_static[static_idx].use_order = False
-                    color = 'tab:gray'
-                else:
-                    if not self.calib_data_static[static_idx].use_order:
-                        something_changed = True 
-                    
-                    self.calib_data_static[static_idx].use_order = True
-                    color = 'white' if order_idx == self.selected_order_idx else 'r'
-                    
-                self.update_one_order_curve_color(order_idx, set_color = color)
+                self.calib_data_dynamic[order_idx].use_order = False
+                color = 'tab:gray'
+            
+            else:
+                if not self.calib_data_dynamic[order_idx].use_order:
+                    something_changed = True 
+                
+                self.calib_data_dynamic[order_idx].use_order = True
+                color = 'white' if order_idx == self.selected_order_idx else 'r'
+                
+            self.update_one_order_curve_color(order_idx, set_color = color)
             
         if something_changed:
             self.update_spectrum(force_scale = True)
-            
-        # TODO for v3: think through the cases of different length input bounds
+    
             
     
     # Check if order is too close to top edge of image
@@ -2968,6 +2735,7 @@ if dbg:
 
 ##############################################################################################################
 # Vertical bounds and wavelengths data
+# Make sure the manually input data arrays here have matching order numbers (sorted same way)
 ##############################################################################################################
 
 # This is a constant array in .aryx files (in aif subfile in aryx compressed file).
@@ -2990,6 +2758,7 @@ AIF_DTYPE_ARYX = numpy.dtype([('indLow', numpy.int32),
 # The data is extracted from sample 492 (JET experiment). The data is constant throughout the experiments.
 # Only the smallest order nr row is cut from e.g. 2024.08.12 calibration day spectra because the order was
 # too close to the image edge.
+# I don't use the wavelength data because the wavelength coefficients I calculated with 3 points are more accurate than the 2 points given here.
 # spectrum start px (unsorted),spectrum end px (unsorted),order nr,image start px,image end px,nothing,start wavelength (nm),end wavelength (nm)
 extracted_orders_info = np.array([
     [3.93010e+04,4.03060e+04,3.50000e+01,1.80000e+01,1.02300e+03,0.00000e+00,7.44703e+02,7.70245e+02],
@@ -3092,141 +2861,154 @@ extracted_orders_info = np.array([
 ])
 
 
-# This array is gained by fitting quadratic fn to every order in Sophi nXt output spectrum 
-# for sample 492 (perfect fit).
-#order_nr,a,b,c
+# This array is gained by fitting quadratic fn to every order in Sophi nXt output spectrum for sample 492.
+# Since the sample spectrum had shifted (misaligned) then self.origin_shift_right corrects the misalignment.
+# self.origin_shift_right makes sure the spectral lines have correct wavelengths when using these coefficients.
+# y = c + b * px + a * px^2
+#order_nr, c, b, a 
 wavelength_calculation_coefficients = np.array([
-[35,-7.00E-07,0.026221,744.659717],
-[36,-6.76E-07,0.025487,723.968536],
-[37,-6.57E-07,0.024796,704.396709],
-[38,-6.40E-07,0.024142,685.855902],
-[39,-6.23E-07,0.023523,668.266578],
-[40,-6.12E-07,0.022938,651.55623],
-[41,-5.98E-07,0.022378,635.662755],
-[42,-5.80E-07,0.021842,620.52635],
-[43,-5.67E-07,0.021334,606.093614],
-[44,-5.54E-07,0.02085,592.317075],
-[45,-5.43E-07,0.020387,579.152704],
-[46,-5.31E-07,0.019944,566.560956],
-[47,-5.19E-07,0.019519,554.50497],
-[48,-5.08E-07,0.019113,542.95104],
-[49,-4.99E-07,0.018723,531.86857],
-[50,-4.89E-07,0.018349,521.229365],
-[51,-4.79E-07,0.01799,511.007244],
-[52,-4.71E-07,0.017645,501.178152],
-[53,-4.62E-07,0.017312,491.719804],
-[54,-4.54E-07,0.016992,482.611633],
-[55,-4.45E-07,0.016683,473.8348],
-[56,-4.36E-07,0.016385,465.37118],
-[57,-4.29E-07,0.016098,457.204276],
-[58,-4.22E-07,0.01582,449.318976],
-[59,-4.14E-07,0.015552,441.700825],
-[60,-4.07E-07,0.015294,434.336412],
-[61,-4.01E-07,0.015043,427.213362],
-[62,-3.95E-07,0.014801,420.319964],
-[63,-3.88E-07,0.014566,413.645358],
-[64,-3.82E-07,0.014339,407.179242],
-[65,-3.76E-07,0.014118,400.911928],
-[66,-3.71E-07,0.013905,394.83442],
-[67,-3.65E-07,0.013698,388.938243],
-[68,-3.60E-07,0.013496,383.215419],
-[69,-3.54E-07,0.013301,377.658416],
-[70,-3.49E-07,0.013111,372.260075],
-[71,-3.44E-07,0.012927,367.013682],
-[72,-3.40E-07,0.012747,361.912971],
-[73,-3.35E-07,0.012573,356.951954],
-[74,-3.31E-07,0.012403,352.124949],
-[75,-3.26E-07,0.012238,347.426573],
-[76,-3.22E-07,0.012077,342.851777],
-[77,-3.18E-07,0.01192,338.395757],
-[78,-3.14E-07,0.011768,334.053939],
-[79,-3.10E-07,0.011619,329.821965],
-[80,-3.06E-07,0.011474,325.695765],
-[81,-3.02E-07,0.011332,321.671399],
-[82,-2.99E-07,0.011195,317.74509],
-[83,-2.95E-07,0.01106,313.913386],
-[84,-2.92E-07,0.010928,310.172899],
-[85,-2.88E-07,0.0108,306.520343],
-[86,-2.85E-07,0.010674,302.952695],
-[87,-2.82E-07,0.010552,299.46701],
-[88,-2.79E-07,0.010432,296.06053],
-[89,-2.75E-07,0.010315,292.730567],
-[90,-2.72E-07,0.010201,289.474537],
-[91,-2.69E-07,0.010089,286.290057],
-[92,-2.66E-07,0.009979,283.174805],
-[93,-2.64E-07,0.009872,280.126503],
-[94,-2.61E-07,0.009767,277.143023],
-[95,-2.58E-07,0.009664,274.222291],
-[96,-2.56E-07,0.009564,271.362386],
-[97,-2.53E-07,0.009465,268.561468],
-[98,-2.50E-07,0.009369,265.817678],
-[99,-2.48E-07,0.009274,263.129291],
-[100,-2.45E-07,0.009182,260.494646],
-[101,-2.43E-07,0.009091,257.912157],
-[102,-2.40E-07,0.009002,255.380284],
-[103,-2.38E-07,0.008914,252.897539],
-[104,-2.36E-07,0.008829,250.462526],
-[105,-2.34E-07,0.008745,248.073874],
-[106,-2.32E-07,0.008662,245.730265],
-[107,-2.29E-07,0.008582,243.430441],
-[108,-2.27E-07,0.008502,241.173221],
-[109,-2.25E-07,0.008424,238.957405],
-[110,-2.23E-07,0.008348,236.781855],
-[111,-2.21E-07,0.008272,234.64548],
-[112,-2.19E-07,0.008199,232.547217],
-[113,-2.17E-07,0.008126,230.486076],
-[114,-2.15E-07,0.008055,228.461106],
-[115,-2.14E-07,0.007985,226.47135],
-[116,-2.12E-07,0.007916,224.515874],
-[117,-2.10E-07,0.007849,222.593802],
-[118,-2.08E-07,0.007782,220.704322],
-[119,-2.07E-07,0.007717,218.846563],
-[120,-2.05E-07,0.007653,217.019765],
-[121,-2.03E-07,0.00759,215.223181],
-[122,-2.01E-07,0.007527,213.456005],
-[123,-2.00E-07,0.007466,211.717568],
-[124,-1.98E-07,0.007406,210.007169],
-[125,-1.97E-07,0.007347,208.324113],
-[126,-1.95E-07,0.007289,206.667762],
-[127,-1.94E-07,0.007231,205.037474],
-[128,-1.92E-07,0.007175,203.432694],
-[129,-1.91E-07,0.007119,201.852738],
-[130,-1.90E-07,0.007065,200.296964],
-[131,-1.85E-07,0.007008,198.765832]
+[35, 744.6606369, 0.026219046, -6.99723E-07],
+[36, 723.9690378, 0.025487264, -6.77505E-07],
+[37, 704.3971515, 0.024796671, -6.58831E-07],
+[38, 685.8562886, 0.024142858, -6.41254E-07],
+[39, 668.2669108, 0.02352298, -6.24737E-07],
+[40, 651.556411, 0.022937973, -6.11995E-07],
+[41, 635.6633543, 0.022376726, -5.9762E-07],
+[42, 620.5265819, 0.021842352, -5.80982E-07],
+[43, 606.093802, 0.021334739, -5.67896E-07],
+[44, 592.3172827, 0.020849941, -5.55284E-07],
+[45, 579.1528605, 0.020387273, -5.43408E-07],
+[46, 566.5611796, 0.019943761, -5.31571E-07],
+[47, 554.5051032, 0.019519183, -5.19657E-07],
+[48, 542.951144, 0.019113054, -5.09113E-07],
+[49, 531.8686875, 0.018723613, -4.99193E-07],
+[50, 521.2294916, 0.018349491, -4.89398E-07],
+[51, 511.0073567, 0.017990125, -4.7995E-07],
+[52, 501.1782737, 0.017644591, -4.70933E-07],
+[53, 491.7199239, 0.017312214, -4.62289E-07],
+[54, 482.6117728, 0.016992135, -4.54008E-07],
+[55, 473.8349314, 0.016682891, -4.45349E-07],
+[56, 465.3712357, 0.016385065, -4.37024E-07],
+[57, 457.2043406, 0.016098067, -4.29566E-07],
+[58, 449.3190416, 0.015820591, -4.22036E-07],
+[59, 441.7008594, 0.015552614, -4.14721E-07],
+[60, 434.3364439, 0.015293827, -4.07953E-07],
+[61, 427.2134031, 0.015043439, -4.01376E-07],
+[62, 420.3199984, 0.014801163, -3.94982E-07],
+[63, 413.645398, 0.01456637, -3.88673E-07],
+[64, 407.1792584, 0.014338876, -3.82427E-07],
+[65, 400.9119379, 0.014118553, -3.76571E-07],
+[66, 394.8344317, 0.013904952, -3.70956E-07],
+[67, 388.9382569, 0.013697703, -3.6549E-07],
+[68, 383.2154329, 0.013496464, -3.60112E-07],
+[69, 377.6584204, 0.013300971, -3.54793E-07],
+[70, 372.2600699, 0.013111151, -3.49695E-07],
+[71, 367.0136792, 0.0129268, -3.44878E-07],
+[72, 361.9129747, 0.012747486, -3.40143E-07],
+[73, 356.9519515, 0.012573024, -3.35455E-07],
+[74, 352.124944, 0.012403274, -3.30901E-07],
+[75, 347.4265643, 0.012238133, -3.26534E-07],
+[76, 342.8517748, 0.012077325, -3.22305E-07],
+[77, 338.3957532, 0.011920664, -3.18138E-07],
+[78, 334.0539359, 0.011768007, -3.14078E-07],
+[79, 329.8219633, 0.011619275, -3.10167E-07],
+[80, 325.6957679, 0.011474175, -3.06308E-07],
+[81, 321.6713946, 0.011332651, -3.02499E-07],
+[82, 317.745092, 0.011194729, -2.98939E-07],
+[83, 313.9133978, 0.011059994, -2.95376E-07],
+[84, 310.1728992, 0.01092839, -2.91782E-07],
+[85, 306.5203422, 0.010799989, -2.8838E-07],
+[86, 302.9526999, 0.010674553, -2.85064E-07],
+[87, 299.4670145, 0.010552044, -2.81839E-07],
+[88, 296.0605411, 0.010432246, -2.78658E-07],
+[89, 292.7305713, 0.01031514, -2.75508E-07],
+[90, 289.4745483, 0.010200726, -2.72537E-07],
+[91, 286.290074, 0.010088757, -2.69576E-07],
+[92, 283.1748155, 0.009979136, -2.66588E-07],
+[93, 280.1265078, 0.009871915, -2.63697E-07],
+[94, 277.1430282, 0.009766993, -2.60899E-07],
+[95, 274.2223017, 0.009664375, -2.58237E-07],
+[96, 271.362409, 0.009563876, -2.55644E-07],
+[97, 268.5614874, 0.009465323, -2.52971E-07],
+[98, 265.8176921, 0.009368812, -2.50373E-07],
+[99, 263.1293055, 0.009274255, -2.47844E-07],
+[100, 260.4946596, 0.009181597, -2.45367E-07],
+[101, 257.9121702, 0.009090756, -2.42932E-07],
+[102, 255.3802939, 0.009001698, -2.40539E-07],
+[103, 252.8975513, 0.008914407, -2.38234E-07],
+[104, 250.4625402, 0.008828777, -2.35962E-07],
+[105, 248.0738896, 0.008744781, -2.33733E-07],
+[106, 245.7302843, 0.008662393, -2.31569E-07],
+[107, 243.4304664, 0.008581552, -2.29456E-07],
+[108, 241.1732443, 0.008502124, -2.27309E-07],
+[109, 238.9574218, 0.008424144, -2.2518E-07],
+[110, 236.7818691, 0.008347601, -2.23117E-07],
+[111, 234.6454927, 0.008272461, -2.21108E-07],
+[112, 232.5472364, 0.008198724, -2.19199E-07],
+[113, 230.4861047, 0.008126294, -2.1733E-07],
+[114, 228.461137, 0.008055069, -2.15434E-07],
+[115, 226.4713778, 0.007985061, -2.13546E-07],
+[116, 224.5159031, 0.007916294, -2.11721E-07],
+[117, 222.5938366, 0.007848731, -2.09959E-07],
+[118, 220.7043557, 0.007782245, -2.0817E-07],
+[119, 218.8465979, 0.00771694, -2.06452E-07],
+[120, 217.019807, 0.007652694, -2.04762E-07],
+[121, 215.2232133, 0.00758944, -2.03014E-07],
+[122, 213.4560398, 0.00752731, -2.01381E-07],
+[123, 211.7176043, 0.007466152, -1.99749E-07],
+[124, 210.0072009, 0.00740596, -1.98114E-07],
+[125, 208.3241463, 0.007346768, -1.96544E-07],
+[126, 206.6677975, 0.007288519, -1.95004E-07],
+[127, 205.0375157, 0.007231218, -1.93517E-07],
+[128, 203.4327313, 0.007174703, -1.91962E-07],
+[129, 201.8527768, 0.007119194, -1.90522E-07],
+[130, 200.2970552, 0.007064804, -1.89371E-07],
+[131, 198.7659124, 0.007008419, -1.85906E-07]
 ])
 
 
-# TODO: detect and cut top order if close to edge like when _Vertical_points.csv doesn't have the line
+# order_nr, start px, end px
+bounds_data = extracted_orders_info[:, [2,3,4]]
 
-# order_nr, start px, end px, start wl, end wl, a, b, c
-orders_info = np.concatenate((extracted_orders_info[:, [2,3,4,6,7]], wavelength_calculation_coefficients[:,[1,2,3]]), axis=1)
+# sort in ascending order nr
+bounds_data = bounds_data[bounds_data[:, 0].argsort()]
+wavelength_calculation_coefficients = wavelength_calculation_coefficients[wavelength_calculation_coefficients[:, 0].argsort()]
 
-# These values are gained by analyzing the spectrum from Sophi nXt with sample 492.
+
+# Calculate the wavelength of a pixel of a given order with given horizontal shift. px_array can be scalar or 1D array.
 # Wavelengths of other spectra can be calculated with 1 pm accuracy with horizontal shift.
-def order_px_to_wavelength(order_nr, px, horizontal_shift = 0):
+def order_px_to_wavelength(order_nr, px_array_orig, horizontal_shift = 0):
+    order_nrs = wavelength_calculation_coefficients[:,0] #order_nr, c, b, a 
+    first_order_in_data = int(bounds_data[0,0]) # already sorted
+    last_order_in_data = int(bounds_data[-1,0]) # already sorted
     
-    # Each order and its wavelengths follow a quadratic fn y = a * x^2 + b * x + c
-    # px in the equation is the image px, not order px. Px is from 0 to 1023 and bounds don't matter.
-    # These coefficients in turn follow a very strong (smallest R^2 was 0.99997) linear (division) curve.
-    #a = -0.0000243121 / order_nr - 0.0000000022
-    #b = 0.9169981497 / order_nr + 0.0000110699
-    #c = 26072.6114478297 / order_nr - 0.2305172110
+    # Calculate coefficients from regression fromula if order nr is not defined in data
+    if (order_nr < first_order_in_data) or (order_nr > last_order_in_data):
+        
+        # These values are gained by analyzing the spectrum from Sophi nXt with sample 492.
+        # Each order and its wavelengths follow a quadratic fn y = a * x^2 + b * x + c
+        # px in the equation is the image px, not order px (latter starting from left bound). 
+        # px is from 0 to 1023 and bounds don't matter.
+        # These coefficients in turn follow a very strong (smallest R^2 was 0.99997) linear (division) curve.
+        a = -2.43686E-05 / order_nr - 1.68E-09
+        b = 0.917000145 / order_nr + 1.11102E-05
+        c = 26072.63016 / order_nr - 0.230703041
+        coefs = np.array([c, b, a])
     
-    # get index of row where order_nr is the same
-    idxs = np.where(order_nr == orders_info[:,0])[0]
-    if len(idxs) == 0: 
-        print('ERROR: order_px_to_wavelength() | no match for order ' + str(order_nr))
-        return
-    else: 
-        idx = idxs[0]
     
     # The direct polynomial coefficients still give more accurate result than a,b,c functions.
-    a = orders_info[idx, 5]
-    b = orders_info[idx, 6]
-    c = orders_info[idx, 7]
+    # Get index of row where order_nr is the same and get the corresponding coefficients.
+    else:
+        idxs = np.where(order_nr == order_nrs)[0]
+        if len(idxs) == 0:
+            raise Exception(f'ERROR: order_px_to_wavelength() | no match for order {order_nr}. Check wavelength_calculation_coefficients for irregular order_nr-s.')
+        else: 
+            idx = idxs[0]
+        coefs = wavelength_calculation_coefficients[idx, 1:4]
     
-    px += horizontal_shift # TODO: check shift sign
-    return a * px^2 + b * px + c
+    px_array = px_array_orig.astype(float) # since shift is float but px is int
+    px_array -= horizontal_shift
+    return np.polynomial.polynomial.polyval(px_array, coefs)
 
 ##############################################################################################################
 # RUN MAIN PROGRAM
