@@ -1,12 +1,12 @@
 # Author: Jasper Ristkok
-# v3.1
+# v3.1.1
 
 # Code to convert an echellogram (photo) to spectrum
 
 
 # TODO: check order edit mode
 # TODO: better align (interpolate) calibration curves
-
+# TODO: draw integration radius around selected order (radius depends on distance of orders - causes confusion in GUI)
 
 
 ##############################################################################################################
@@ -229,7 +229,7 @@ def create_folder_structure():
     
         
 # returns array of tif image and filename where index is _0001 with the file extension (.tif)
-def prepare_photos(series_filename = None):
+def prepare_photos(series_filename = None, average_nr = 1):
     exif_data = None
     
     # Get files
@@ -260,7 +260,7 @@ def prepare_photos(series_filename = None):
         if len(input_files) == 0:
             raise Exception('Error: no files in input folder: ' + str(input_photos_path))
         
-        average_array, exif_data = average_photos(input_files, average_nr = average_photos_nr)
+        average_array, exif_data = average_photos(input_files, average_nr = average_nr)
         
         if script_manual_mode:
             output_averaged_photo(average_array, output_path, averaged_name, exif_data)
@@ -285,6 +285,8 @@ def average_photos(input_files, average_nr = None):
     
     if average_nr is None:
         average_nr = len(input_files) # iterate over all files
+    average_nr = clip(average_nr, min_v = 1)
+    
     
     # Initialize averaging variables
     count = 0
@@ -492,6 +494,7 @@ class calibration_window():
     def init_class_variables(self):
         self.working_path = working_path
         self.series_filename = series_filename # filename (for shot series) to use where index is _0001 but without file extension (.tif)
+        self.average_photos_nr = average_photos_nr
         
         self.ignore_top_orders = True
         self.autoscale_spectrum = False
@@ -574,15 +577,20 @@ class calibration_window():
         
         self.use_sample_var = tkinter.StringVar()
         self.input_path_var = tkinter.StringVar()
+        self.average_nr_var = tkinter.StringVar()
         self.input_order_var = tkinter.StringVar()
         #self.integral_width_var = tkinter.StringVar()
         self.shift_orders_up_var = tkinter.StringVar()
         self.shift_orders_right_var = tkinter.StringVar()
         
+        
         input_sample_label = tkinter.Label(self.frame_input_wide, text = 'Use sample:')
         input_sample = tkinter.Entry(self.frame_input_wide, textvariable = self.use_sample_var)
         input_path_label = tkinter.Label(self.frame_input_wide, text = 'Directory path:')
         input_path = tkinter.Entry(self.frame_input_wide, textvariable = self.input_path_var)
+        
+        input_average_nr_label = tkinter.Label(self.frame_input, text = 'Average photos target:')
+        input_average_nr = tkinter.Entry(self.frame_input, textvariable = self.average_nr_var)
         
         input_order_label = tkinter.Label(self.frame_input, text = 'Overwrite first order nr:')
         input_order = tkinter.Entry(self.frame_input, textvariable = self.input_order_var)
@@ -598,6 +606,7 @@ class calibration_window():
         
         self.use_sample_var.set(str(self.series_filename))
         self.input_path_var.set(str(self.working_path))
+        self.average_nr_var.set(str(self.average_photos_nr))
         self.input_order_var.set(str(self.first_order_nr))
         self.shift_orders_up_var.set(0)
         self.shift_orders_right_var.set(0)
@@ -613,6 +622,8 @@ class calibration_window():
         input_path_label.pack(fill='x', expand=1)
         input_path.pack(fill='x', expand=1)
         
+        input_average_nr_label.grid(row = 3, column = 0)
+        input_average_nr.grid(row = 3, column = 1)
         input_order_label.grid(row = 4, column = 0)
         input_order.grid(row = 4, column = 1)
         input_shift_label_up.grid(row = 5, column = 0)
@@ -632,7 +643,7 @@ class calibration_window():
         label_separator_visual.pack()
         
         # Labels
-        self.feedback_text = tkinter.Text(self.frame_text, height = 4, width = 30)
+        self.feedback_text = tkinter.Text(self.frame_text, height = 5, width = 30)
         self.feedback_text.pack(side = 'top')
         
         
@@ -806,7 +817,7 @@ class calibration_window():
     def load_sample_data(self):
         
         # average input photos and return the array
-        average_array, identificator = prepare_photos(self.series_filename)
+        average_array, identificator = prepare_photos(self.series_filename, average_nr = self.average_photos_nr)
         
         # Initialize used sample
         if self.series_filename is None:
@@ -970,10 +981,13 @@ class calibration_window():
         
         new_sample = self.use_sample_var.get()
         path = self.input_path_var.get()
+        average_photos_nr = int(self.average_nr_var.get())
         first_order_nr = int(self.input_order_var.get())
         #self.integral_width = float(self.integral_width_var.get())
         shift_orders_amount_up = float(self.shift_orders_up_var.get())
         shift_orders_amount_right = float(self.shift_orders_right_var.get())
+        
+        
         
         # Empty the variables
         #self.input_path_var.set('')
@@ -984,12 +998,14 @@ class calibration_window():
         
         # New folder, do almost everything from scratch, ignore other saved variables
         if path != self.working_path:
+            self.average_photos_nr = average_photos_nr
             self.series_filename = new_sample
             self.update_path(path, new_sample = new_sample)
             return
         
-        # Use new sample, load data again and draw plots again
-        if new_sample != self.series_filename:
+        # Use new sample or different averaging, load data again and draw plots again
+        if (new_sample != self.series_filename) or (average_photos_nr != self.average_photos_nr):
+            self.average_photos_nr = average_photos_nr
             self.update_sample(new_sample)
             return
         
@@ -998,9 +1014,7 @@ class calibration_window():
         if (self.first_order_nr != first_order_nr):
             self.first_order_nr = first_order_nr
             self.update_bounds_data()
-                
-            
-            
+        
         
         
         # Shift order curves and bounds. If shift is 0 then returns immediately.
@@ -1149,7 +1163,7 @@ class calibration_window():
     def shift_wavelengths_fn(self):
         self.shift_wavelengths = not self.shift_wavelengths
         # TODO: update spectrum
-        self.set_feedback('Shift spectrum wavelengths (wavelengths locked to orders): ' + str(self.shift_wavelengths))
+        self.set_feedback(f'Shift spectrum wavelengths (wavelengths locked to orders): {self.shift_wavelengths}. \nWarning! Processor uses shift_wavelengths = True')
     
     # Enable/disable orders that are too close to image top edge
     def ignore_top_orders_fn(self):
@@ -2072,7 +2086,7 @@ class calibration_window():
         
         # Out of bounds - gray
         if not self.calib_data_dynamic[order_idx].use_order:
-            color = 'tab:gray'
+            color = 'darkgray'
         
         # Selected - white
         if order_idx == self.selected_order_idx:
@@ -2092,7 +2106,7 @@ class calibration_window():
         
         # Out of bounds - gray
         if not self.calib_data_dynamic[order_idx].use_order:
-            color = 'black'
+            color = 'darkgray'
         
         # Selected - black
         if order_idx == self.selected_order_idx:
@@ -2127,8 +2141,8 @@ class calibration_window():
         [px_start, px_end] = self.bounds_px[static_idx]
         
         coefs = np.polynomial.polynomial.polyfit(order.xlist, order.ylist, 2)
-        y_start = poly_func_value(px_start, coefs)
-        y_end = poly_func_value(px_end, coefs)
+        y_start = np.polynomial.polynomial.polyval(px_start, coefs)
+        y_end = np.polynomial.polynomial.polyval(px_end, coefs)
         
         return px_start, px_end, y_start, y_end
     
@@ -2285,63 +2299,10 @@ class calibration_window():
         if radius == 0:
             return self.photo_array[y_array, x_array] # x and y have to be switched (first dimension is vertical on image)
         
-        '''
-        integrals = []
-        for idx, x in enumerate(x_array):
-            y_center = y_array[idx]
-            integral = self.interpolate_integral_data(x, y_center, radius)
-            integrals.append(integral)
-        '''
         integrals = self.integrate_order_width_interpolated(x_array, y_array, radius)
         
         return integrals
     
-    '''
-    # The x_array are integers. y_array are floats but are bound by image top and bottom indices (0 and 1023).
-    # Between the bounds the pixel value (z-value, intensity) is interpolation (quadratic fn) between neighboring pixels (vertical axis).
-    def interpolate_integral_data(self, x, y, radius):
-        
-        # Get float y-index bounds for the integral
-        high_y = y + radius
-        low_y = y - radius
-        high_y = clip(high_y, min_v = 0, max_v = self.max_y_idx)
-        low_y = clip(low_y, min_v = 0, max_v = self.max_y_idx)
-        
-        # Direct sum between full pixel indices
-        sum_high = math.floor(high_y)
-        sum_low = math.ceil(low_y)
-        sum_y_indices = np.arange(sum_low, sum_high + 1, dtype = int)
-        sum_x_indices = np.full(sum_y_indices.shape, x, dtype = int)
-        sum_array = self.photo_array[sum_y_indices, sum_x_indices] # Gather the pixel values from photo_array
-        integral = np.sum(sum_array)
-        
-        # Get the next polynomial interpolation indices for fractional addition 
-        interp_lowest = sum_low - 1
-        interp_highest = sum_high + 1
-        
-        # Keep polynomial indices within image bounds
-        offset_low = 0
-        offset_high = 0
-        if interp_lowest < 0:
-            offset_low = 1
-        elif interp_highest > self.max_y_idx: # radius isn't big enough to consider both simultaneously
-            offset_high = -1
-        
-        
-        # Get y-indices to do quadratic fn interpolation on
-        x_indices = np.full((3, ), x, dtype = int)
-        interpolation_indices_low = np.array([sum_low - 1, sum_low, sum_low + 1]) + offset_low
-        interpolation_indices_high = np.array([sum_high - 1, sum_high, sum_high + 1]) + offset_high
-        z_values_low = self.photo_array[interpolation_indices_low, x_indices]
-        z_values_high = self.photo_array[interpolation_indices_high, x_indices]
-        
-        # Get value from fractional index. Do interpolation and multiply the value with remaining index fraction (smooth <=> discrete integral conversion).
-        low_fraction = sum_low - low_y
-        high_fraction = high_y - sum_high
-        integral += simple_quadratic_interpolate(low_y, interpolation_indices_low, z_values_low) * low_fraction
-        integral += simple_quadratic_interpolate(high_y, interpolation_indices_high, z_values_high) * high_fraction
-        return integral
-    '''
     
     # Made with Gemini 2.5 Pro (based on my algorithm)
     def integrate_order_width_interpolated(self, x_indices, y_indices_center_float, radius_float):
@@ -2525,123 +2486,8 @@ class calibration_window():
         else:
             return False
             
-        
-    
-    '''
-    def point_in_range(self, x_point, x1, y1, x2, y2, x3, y3):
-        
-        x_start,_ = intersection(x1,y1,x2,y2) # intersection function is way too slow
-        x_start = x_start[0]
-        
-        x_end,_ = intersection(x1,y1,x3,y3)
-        x_end = x_end[0]
-        
-        if x_start <= x_point <= x_end:
-            return True
-        return False
-    '''
-
-# Do linear regression and find the y-value at provided x
-def linear_regression(x, x_start, x_end, y_start, y_end):
-    
-    dx = x_end - x_start
-    dy = y_end - y_start
-    slope = dy / dx
-    intercept = y_start - slope * x_start
-    
-    y = x * slope + intercept
-    return y
-
-# Calculate quadratic fn and then fint the value of y at x
-def quadratic_regression(x, x_values, y_values):
-    poly_coefs = np.polynomial.polynomial.polyfit(x_values, y_values, 2)
-    y = poly_coefs[2] * x ** 2 + poly_coefs[1] * x + poly_coefs[0]
-    return y
-'''
-# Sum pixels around the order
-# If the width is even number then take asymmetrically one pixel from lower index
-# if use_weights is True then the integral is summed with Gaussian weights (max is in center) with FWHM of width
-def integrate_order_width(photo_array, x_pixel, y_pixel, width = 1, use_weights = False):
-    width = round(width)
-    
-    if width == 1:
-        return photo_array[y_pixel, x_pixel] # x and y have to be switched (somewhy)
-    
-    integral = 0
-    x_pixel = clip(x_pixel, 0, self.max_x_idx)
-    idx_lower = math.floor(width / 2)
-    idx_higher = math.ceil(width / 2) # range omits last value
-    for y_idx in range(y_pixel - idx_lower, y_pixel + idx_higher):
-        y_idx = clip(y_idx, 0, self.max_y_idx)
-        
-        gaussian_weight = 1
-        if use_weights:
-            a = 1 # normalized
-            c = width / 2.35482 # width is FWHM
-            gaussian_weight = a * math.exp(-(y_pixel - y_idx) ** 2 / 2 / c ** 2)
-        
-        integral += photo_array[y_idx, x_pixel] * gaussian_weight # x and y have to be switched (somewhy)
-    
-    return integral
-'''
-
-def get_polynomial_intersection(coefs1, coefs2, image_size, is_left = True):
-    x1, y1, x2, y2 = calc_polynomial_intersection(coefs1, coefs2)
-    best_x = None
-    
-    # check if values are in bounds of the image
-    if (0 <= x1 <= image_size - 1) and (0 <= y1 <= image_size - 1):
-        best_x = x1
-    
-    if (0 <= x2 <= image_size - 1) and (0 <= y2 <= image_size - 1):
-        
-        if best_x is None: # only second point is ok
-            return x2
-        else: # both points are ok, select best
-            
-            if is_left:
-                best_x = max(x1, x2)
-            else:
-                best_x = min(x1, x2)
-            return best_x
-    
-    # 2nd point was no good
-    return best_x
-
-# assumes 2nd order
-def calc_polynomial_intersection(coefs1, coefs2):
-    a = coefs1[2] - coefs2[2]
-    b = coefs1[1] - coefs2[1]
-    c = coefs1[0] - coefs2[0]
-    
-    
-    sqrt_val = b ** 2 - 4 * a * c
-    x1 = (-b + np.sqrt(sqrt_val)) / 2 / a
-    x2 = (-b - np.sqrt(sqrt_val)) / 2 / a
-    
-    y1 = coefs1[2] * x1 ** 2 + coefs1[1] * x1 + coefs1[0]
-    y2 = coefs1[2] * x2 ** 2 + coefs1[1] * x2 + coefs1[0]
-    
-    return x1, y1, x2, y2
 
 
-# sort the arrays in increasing value or first array
-def sort_related_arrays(arr1, arr2_list):
-    sort_idx = np.argsort(arr1)
-    arr1 = arr1[sort_idx]
-    if type(arr2_list) == 'list':
-        for idx in range(len(arr2_list)):
-            arr2_list[idx] = arr2_list[idx][sort_idx]
-    else: # not list but single array
-        arr2_list = arr2_list[sort_idx]
-    return arr1, arr2_list
-
-# Create a combined list of points
-def gather_points(list_of_lists):
-    combined_list = []
-    for sub_list in list_of_lists:
-        combined_list += sub_list
-    return combined_list
 
 # Calculate points of polynomial for plotting
 def get_polynomial_points(order, arr_length, flip = False):
@@ -2656,7 +2502,7 @@ def get_polynomial_points(order, arr_length, flip = False):
     # get array of points on image for the polynomial
     curve_array = np.empty(arr_length)
     for idx in range(arr_length):
-        curve_array[idx] = poly_func_value(idx, use_coefs)
+        curve_array[idx] = np.polynomial.polynomial.polyval(idx, use_coefs)
     
     
     # clip the values
@@ -2666,15 +2512,6 @@ def get_polynomial_points(order, arr_length, flip = False):
 
 # Take the x and y values and get quadratic fn for them. Then calculate the y at x.
 def simple_quadratic_interpolate(x, x_array, y_array):
-    '''
-    from scipy.interpolate import interp1d
-    
-    # Create linear interpolator with extrapolation enabled
-    linear_interp = interp1d(x_array, y_array, kind='quadratic', fill_value='extrapolate', assume_sorted=False)
-    
-    # Interpolate multipliers at the spectrum wavelengths
-    y = linear_interp(x)
-    '''
     coefs = np.polynomial.polynomial.polyfit(x_array, y_array, 2)
     y = np.polynomial.polynomial.polyval(x, coefs)
     return y
@@ -2765,100 +2602,26 @@ def str_is_number(string):
     except TypeError:
         return False
 
-# Return a value for the polynomial
-def poly_func_value(x_value, coefs):
-    value = 0
-    for idx, coef in enumerate(coefs):
-        value += coef * x_value ** idx
-    return round(value, 10)
-
-# Return the distance between two xy points
-def xy_distance(point1x, point1y, point2x, point2y):
-    return np.sqrt((point2x - point1x) ** 2 + (point2y - point1y) ** 2)
-
 def clip(value, min_v = -math.inf, max_v = math.inf):
     return max(min_v, min(value, max_v))
 
+# sort the arrays in increasing value or first array
+def sort_related_arrays(arr1, arr2_list):
+    sort_idx = np.argsort(arr1)
+    arr1 = arr1[sort_idx]
+    if type(arr2_list) == 'list':
+        for idx in range(len(arr2_list)):
+            arr2_list[idx] = arr2_list[idx][sort_idx]
+    else: # not list but single array
+        arr2_list = arr2_list[sort_idx]
+    return arr1, arr2_list
 
-############################################################
-# Sukhbinder
-# 5 April 2017
-# https://stackoverflow.com/questions/20677795/how-do-i-compute-the-intersection-point-of-two-lines
-############################################################
-def _rect_inter_inner(x1,x2):
-    n1=x1.shape[0]-1
-    n2=x2.shape[0]-1
-    X1=np.c_[x1[:-1],x1[1:]]
-    X2=np.c_[x2[:-1],x2[1:]]    
-    S1=np.tile(X1.min(axis=1),(n2,1)).T
-    S2=np.tile(X2.max(axis=1),(n1,1))
-    S3=np.tile(X1.max(axis=1),(n2,1)).T
-    S4=np.tile(X2.min(axis=1),(n1,1))
-    return S1,S2,S3,S4
-
-def _rectangle_intersection_(x1,y1,x2,y2):
-    S1,S2,S3,S4=_rect_inter_inner(x1,x2)
-    S5,S6,S7,S8=_rect_inter_inner(y1,y2)
-
-    C1=np.less_equal(S1,S2)
-    C2=np.greater_equal(S3,S4)
-    C3=np.less_equal(S5,S6)
-    C4=np.greater_equal(S7,S8)
-
-    ii,jj=np.nonzero(C1 & C2 & C3 & C4)
-    return ii,jj
-
-def intersection(x1,y1,x2,y2):
-    """
-INTERSECTIONS Intersections of curves.
-   Computes the (x,y) locations where two curves intersect.  The curves
-   can be broken with NaNs or have vertical segments.
-usage:
-x,y=intersection(x1,y1,x2,y2)
-    Example:
-    a, b = 1, 2
-    phi = np.linspace(3, 10, 100)
-    x1 = a*phi - b*np.sin(phi)
-    y1 = a - b*np.cos(phi)
-    x2=phi    
-    y2=np.sin(phi)+2
-    x,y=intersection(x1,y1,x2,y2)
-    plt.plot(x1,y1,c='red')
-    plt.plot(x2,y2,c='g')
-    plt.plot(x,y,'*k')
-    plt.show()
-    """
-    ii,jj=_rectangle_intersection_(x1,y1,x2,y2)
-    n=len(ii)
-
-    dxy1=np.diff(np.c_[x1,y1],axis=0)
-    dxy2=np.diff(np.c_[x2,y2],axis=0)
-
-    T=np.zeros((4,n))
-    AA=np.zeros((4,4,n))
-    AA[0:2,2,:]=-1
-    AA[2:4,3,:]=-1
-    AA[0::2,0,:]=dxy1[ii,:].T
-    AA[1::2,1,:]=dxy2[jj,:].T
-
-    BB=np.zeros((4,n))
-    BB[0,:]=-x1[ii].ravel()
-    BB[1,:]=-x2[jj].ravel()
-    BB[2,:]=-y1[ii].ravel()
-    BB[3,:]=-y2[jj].ravel()
-
-    for i in range(n):
-        try:
-            T[:,i]=np.linalg.solve(AA[:,:,i],BB[:,i])
-        except:
-            T[:,i]=np.NaN
-
-
-    in_range= (T[0,:] >=0) & (T[1,:] >=0) & (T[0,:] <=1) & (T[1,:] <=1)
-
-    xy0=T[2:,in_range]
-    xy0=xy0.T
-    return xy0[:,0],xy0[:,1]
+# Create a combined list of points
+def gather_points(list_of_lists):
+    combined_list = []
+    for sub_list in list_of_lists:
+        combined_list += sub_list
+    return combined_list
 
 
 ##############################################################################################################
