@@ -205,8 +205,12 @@ Orders are essentially aligned with the "perfect" Hg lamp image that's saved int
 ---
 
 ## TODO
-- v3 - integrate data from .aif file in .aryx file and remove the need for user to load in "_Vertical_points.csv"
-- Avg_y calc with curve data, not three points - more accurate
-- The added order is automatically selected.
+
 - Spectral multipliers for processor
+- Fix autocalibration
+- remove shift wavelengths button?
+- clip x-values (and corresponding bounds) in case shift is so large that pixel is out of bounds
+- draw integration radius around selected order (radius depends on distance of orders - causes confusion in GUI)
+- Avg_y calc with curve data, not three points - more accurate
 - Top edge value mirroring when integrating an order close to the edge?
+- self.orders_x_pixels int vs float
