@@ -1,5 +1,5 @@
 # Author: Jasper Ristkok
-# v3.1.1
+# v3.2
 
 # Code to convert an echellogram (photo) to spectrum
 
@@ -7,7 +7,7 @@
 # TODO: check order edit mode
 # TODO: better align (interpolate) calibration curves
 # TODO: draw integration radius around selected order (radius depends on distance of orders - causes confusion in GUI)
-
+# TODO: clip x-values (and corresponding bounds) in case shift is so large that pixel is out of bounds.
 
 ##############################################################################################################
 # CONSTANTS
@@ -413,6 +413,10 @@ class dynamic_calibration_data():
             self.points[idx] = point_class(x, y)
         self.update()
     
+    def overwrite_point(self, idx, point):
+        self.points[idx] = point
+        self.update()
+    
     # Create x and y coordinate lists of point instances
     def update(self):
         self.sort_by_x()
@@ -506,6 +510,7 @@ class calibration_window():
     # Gets also called on path change (new folder might contain different calibration data/bounds file). 
     def reset_class_variables_soft(self):
         
+        # Calibration data
         self.origin_shift_right = origin_shift_right
         self.first_order_nr = None
         self.total_shift_right = None
@@ -513,38 +518,36 @@ class calibration_window():
         self.total_shift_right_orig = None
         self.total_shift_up_orig = None
         
+         # User settings
         self.show_orders = True
         self.autoupdate_spectrum = True
         self.program_mode = None
-        self.selected_order_nr = None
         self.selected_order_idx = None
         
-        
-        self.photo_array = [] # assumes square image
+        # Stuff related to the image
+        self.photo_array = None
         self.cumulative_sum = None # for faster vertical integral calculation
         self.max_x_idx = None
         self.max_y_idx = None
-        self.order_plot_points = []
-        self.order_poly_coefs = []
-        self.order_plot_curves = []
-        self.order_bound_points = []
-        
-        # bounds data (changes with right shift) [[x_left, x_right], ...]
-        self.bounds_px = None
+        self.orders_y_px_poly_coefs = None
+        self.orders_y_values = None
+        self.order_plot_points = None # GUI elements
+        self.order_plot_curves = None # GUI elements
+        self.order_bound_points = None # GUI elements
+        self.bounds_px = None # bounds data, static data (changes with right shift) [[x_left, x_right], ...]
         
         # Spectrum data
-        self.orders_x_pixels = []
-        self.orders_wavelengths = []
-        self.orders_intensities = []
-        self.spectrum_curves = None  # from right to left
-        
-        #self.order_data = {} # necessary because order classes get sorted and indices change
+        self.orders_x_pixels = None # static data
+        self.orders_wavelengths = None # static data
+        self.orders_intensities = None
+        self.spectrum_curves = None  # GUI elements, from right to left
         
         # lists to store calibration data like diffraction order class instances
-        self.calib_data_static = None # holds order bounds and shift data
         self.calib_data_dynamic = None # holds points that make up the drawn curves, the order of point classes can change
         
         self.spectrum_total_intensity = 0
+        
+        
     
     #######################################################################################
     # Tkinter window elements
@@ -796,7 +799,7 @@ class calibration_window():
             self.load_sample_data()
             
             # Draw matplotlib plot
-            self.initialize_plot()
+            self.initialize_plot(redraw_canvas = True)
         
         # Catch an exception and print where it came from
         except Exception as e:
@@ -859,7 +862,11 @@ class calibration_window():
             self.load_dynamic_data(calibration_data)
             self.load_static_data(calibration_data)
         
-        self.update_bounds_data()
+        
+        self.overwrite_bounds_data()
+        self.initialize_image_orders_data()
+        self.initialize_spectr_orders_data()
+        
         
     
     # Calculate cumulative sum for each column separately for faster integral calculation for spectrum
@@ -878,7 +885,7 @@ class calibration_window():
         
         # initialize calib_data with photo_array bounds for better plotting
         if calibration_data is None:
-            self.calib_data_dynamic.append(dynamic_calibration_data(image_width = self.photo_array.shape[0]))
+            self.calib_data_dynamic.append(dynamic_calibration_data(image_width = self.photo_array.shape[1]))
             
         # load saved data
         else:
@@ -906,16 +913,6 @@ class calibration_window():
         self.first_order_nr = calibration_data['first_order_nr']
         self.input_order_var.set(str(self.first_order_nr))
         
-    
-    
-    # Get the order bounds with the corresponding shift
-    # Sophi has order bounds (px) the same no matter how far right the actual image has shifted. 
-    # I have doubts about that they did the proccess correctly, if Sophi tooltips show the actual data for the given order.
-    def update_bounds_data(self, idx = None):
-        if idx is None:
-            self.bounds_px = bounds_data[:, [1,2]] + self.origin_shift_right + self.total_shift_right
-        else:
-            self.bounds_px[idx] = bounds_data[idx, [1,2]] + self.origin_shift_right + self.total_shift_right
     
     
     # Count the given order_idx in bounds data and apply the offset 
@@ -974,10 +971,10 @@ class calibration_window():
     # Button functions
     #######################################################################################
     
-    def save_variables(self):
+    def save_variables(self, is_button_call = True):
         
         # E.g. reset selected order
-        self.reset_mode(button_call = False)
+        self.reset_mode(is_button_call = False)
         
         new_sample = self.use_sample_var.get()
         path = self.input_path_var.get()
@@ -1013,16 +1010,16 @@ class calibration_window():
         # First order nr changes, so re-compile bounds data
         if (self.first_order_nr != first_order_nr):
             self.first_order_nr = first_order_nr
-            self.update_bounds_data()
+            self.overwrite_bounds_data()
         
         
         
         # Shift order curves and bounds. If shift is 0 then returns immediately.
-        self.shift_orders_up(shift_orders_amount_up)
-        self.shift_orders_right(shift_orders_amount_right)
+        self.shift_orders_up(shift_orders_amount_up, is_button_call = False)
+        self.shift_orders_right(shift_orders_amount_right, is_button_call = False)
         
         
-        self.update_all()
+        self.update_all(redraw_canvas = True)
         self.set_feedback('Input variables saved')
         
     
@@ -1064,15 +1061,22 @@ class calibration_window():
             self.set_feedback(str(e), 10000)
         
         # Draw plots again
-        self.initialize_plot(do_reset = True)
+        self.initialize_plot(do_reset = True, redraw_canvas = True)
     
     
     # Shift orders horizontally and vertically until spectrum has max value and 
     # spectral lines are at correct wavelengths
-    def autocalibrate(self):
+    def autocalibrate(self, is_button_call = True):
         best_shift, best_int = self.autocalibrate_vertical()
         self.set_feedback('Optimal vertical shift found')
         self.autocalibrate_horizontal()
+        
+        # Draw spectrum again and wait for drawing to finish
+        if is_button_call:
+            self.canvas.draw()
+            self.canvas.flush_events()
+            self.canvas_spectrum.draw()
+            self.canvas_spectrum.flush_events()
     
     
     # Shift orders vertically until spectrum has max value
@@ -1133,13 +1137,12 @@ class calibration_window():
     
     
     def autocalibrate_shift_vertical(self, shift_amount):
-        self.shift_orders_up(shift_amount)
+        self.shift_orders_up(shift_amount, is_button_call = False)
         
-        #self.update_all() # too slow
+        #self.update_all(redraw_canvas = True) # too slow
         self.update_point_instances()
-        self.update_order_curves()
-        self.calculate_all_bounds(initialize_x = True)
-        self.update_spectrum(autoscale = True) # calculated spectrum int
+        self.redraw_order_curves()
+        self.redraw_spectrum(autoscale = False) # calculated spectrum int
         
         new_int = self.spectrum_total_intensity
         
@@ -1149,73 +1152,70 @@ class calibration_window():
         pass # TODO
     
     def autocalibrate_shift_horizontal(self, shift_amount):
-        self.shift_orders_right(shift_amount)
+        self.shift_orders_right(shift_amount, is_button_call = False)
         
         self.update_point_instances()
-        self.update_order_curves()
-        self.calculate_all_bounds(initialize_x = True)
-        self.update_spectrum(autoscale = True)
+        self.redraw_order_curves()
+        self.redraw_spectrum(autoscale = False)
     
     
     
     # If true then shifting orders horizontally also shifts wavelengths
     # If self.shift_wavelengths == True then wavelengths are locked to order curves, otherwise to pixels on image
-    def shift_wavelengths_fn(self):
+    def shift_wavelengths_fn(self, is_button_call = True):
         self.shift_wavelengths = not self.shift_wavelengths
         # TODO: update spectrum
         self.set_feedback(f'Shift spectrum wavelengths (wavelengths locked to orders): {self.shift_wavelengths}. \nWarning! Processor uses shift_wavelengths = True')
     
     # Enable/disable orders that are too close to image top edge
-    def ignore_top_orders_fn(self):
+    def ignore_top_orders_fn(self, is_button_call = True):
         self.ignore_top_orders = not self.ignore_top_orders
-        self.check_top_orders_proximity()
+        self.check_top_orders_proximity(redraw_canvas = is_button_call)
         self.set_feedback('Ignore out of bounds orders: ' + str(self.ignore_top_orders))
     
     
     # Toggles whether horizontal shift moves only bound points or also order curve points
-    def only_shift_bounds(self):
+    def only_shift_bounds(self, is_button_call = True):
         self.shift_only_bounds_right = not self.shift_only_bounds_right
         self.set_feedback('Only shift bounds right (vs curves): ' + str(self.shift_only_bounds_right))
     
     
     # Reset program mode
-    def reset_mode(self, button_call = True):
+    def reset_mode(self, is_button_call = True):
         order_idx = self.selected_order_idx
         
         self.program_mode = None
         self.selected_order_idx = None
-        self.selected_order_nr = None
         
         # Reset selected order color
-        self.update_one_order_curve_color(order_idx)
+        self.redraw_one_order_curve_color(order_idx, redraw_canvas = is_button_call)
         
-        if button_call:
+        if is_button_call:
             self.set_feedback('Mode: reset')
     
     # In this mode you can (de)select a diffraction order to be modified in orders mode
-    def select_order(self):
+    def select_order(self, is_button_call = True):
         self.program_mode = 'select'
         self.set_feedback('Mode: select')
         
     
     # In this mode you can move the selected diffraction order points, no effect if no order selected
-    def orders_mode(self):
+    def orders_mode(self, is_button_call = True):
         
-        if self.selected_order_nr is None:
+        if self.selected_order_idx is None:
             self.set_feedback('Error: No order selected', 8000)
             return
         
         self.program_mode = 'orders'
         
         self.show_orders = True
-        #self.update_order_curves()
-        self.hide_unhide_orders()
+        self.hide_unhide_orders(redraw_canvas = is_button_call)
         
         self.set_feedback('Mode: horizontal curves')
     
     
     # Read in csv file and overwrite order points based on these
-    def load_order_points(self):
+    def load_order_points(self, is_button_call = True):
         
         filenames = get_folder_files_pattern(input_data_path, pattern = r'^_Order_points.*\.csv$')
         
@@ -1240,11 +1240,11 @@ class calibration_window():
             self.calib_data_dynamic.append(order)
         
         
-        self.update_all()
+        self.update_all(redraw_canvas = is_button_call)
         self.set_feedback('Order points loaded')
         
     # Output various stuff and also the calibration data, if it won't overwrite input
-    def write_outputs(self):
+    def write_outputs(self, is_button_call = True):
         create_folder(output_path)
         
         if input_data_path != output_path: # prevent overwriting input here
@@ -1263,7 +1263,7 @@ class calibration_window():
             
             for order_idx in range(len(self.calib_data_dynamic)):
                 order_nr = self.get_order_nr_from_idx(order_idx)
-                coefs = self.order_poly_coefs[order_idx]
+                coefs = self.orders_y_px_poly_coefs[order_idx]
                 file.write(str(order_nr))
                 
                 for coef in coefs:
@@ -1290,8 +1290,6 @@ class calibration_window():
     
     # Write the spectrum x and y data to extra file
     def output_spectrum(self):
-        #x_data = self.spectrum_ax.get_xdata()
-        #y_data = self.spectrum_ax.get_ydata()
         x_values, z_values = self.compile_full_spectrum()
         order_nrs = self.get_spectrum_order_nrs()
         data = np.column_stack((x_values, z_values, order_nrs))
@@ -1300,7 +1298,7 @@ class calibration_window():
     
     
     # Overwrite the order points with the ones calculated from polynomials
-    def orders_tidy(self):
+    def orders_tidy(self, is_button_call = True):
         start_x = 35
         center_x = math.floor(self.photo_array.shape[1] / 2)
         end_x = self.photo_array.shape[1] - 35
@@ -1309,53 +1307,58 @@ class calibration_window():
             order = self.calib_data_dynamic[idx]
             
             x_list = [start_x, center_x, end_x]
-            y_list = np.polynomial.polynomial.polyval(order.xlist, self.order_poly_coefs[idx])
+            y_list = np.polynomial.polynomial.polyval(order.xlist, self.orders_y_px_poly_coefs[idx])
             order.overwrite_points(x_list, y_list)
             
-        self.update_all()
+        self.update_all(redraw_canvas = is_button_call)
     
-    def add_order(self):
+    def add_order(self, is_button_call = True):
         
         # Show orders
         self.show_orders = True
         self.hide_unhide_orders()
         
-        diffr_order = dynamic_calibration_data(self.photo_array.shape[0])
+        diffr_order = dynamic_calibration_data(self.photo_array.shape[1])
         self.calib_data_dynamic.append(diffr_order)
         
-        # Calculate the bounds for that order
-        #self.initialize_bounds(self.selected_order_idx)
+        # Must not take local order_idx as argument because self.sort_orders() doesn't change it
+        #self.recalc_data_order_added(redraw_canvas = is_button_call)
         
-        self.plot_order(diffr_order, color = 'white')
-        
-        # sort orders by average y values
-        #self.calib_data_dynamic.sort(key=lambda x: x.avg_y, reverse=True)
-        
-        self.selected_order_nr = diffr_order.order_nr
+        # Select the added order
+        prev_order_idx = self.selected_order_idx
         self.selected_order_idx = len(self.calib_data_dynamic) - 1
         
+        # Deselect previous order
+        self.redraw_one_order_curve_color(prev_order_idx)
         
+        # Initialize data for the new order
+        self.initialize_image_order_data(self.selected_order_idx)
+        self.overwrite_spectrum_order_data(self.selected_order_idx)
+        
+        # Initialize GUI elements
+        self.plot_order(self.selected_order_idx, color = 'white')
         self.draw_bounds(self.selected_order_idx)
+        self.draw_spectrum_order(self.selected_order_idx)
         
-        self.sort_orders()
+        # sort orders by average y values, this might change order nrs
+        idx_changed = self.sort_orders()
+        
+        # There's new radius and point height, intensities changed
+        self.overwrite_intensities()
+        
+        # Disable orders that are too close to the top edge
+        self.check_top_orders_proximity()
+        
         
         # Draw plot again and wait for drawing to finish
-        self.canvas.draw()
-        self.canvas.flush_events() 
+        self.redraw_order_curves(redraw_canvas = is_button_call)
         
-        #self.order_bound_points[idx]
-        
-        #self.update_order_curves()
-        self.update_spectrum(autoscale = True)
-        
-        
-        # Draw plot again and wait for drawing to finish
-        self.canvas_spectrum.draw()
-        self.canvas_spectrum.flush_events()
+        # Draw spectrum again and wait for drawing to finish
+        self.redraw_spectrum(autoscale = True, redraw_canvas = is_button_call)
         
         self.set_feedback('Order added and selected', 1000)
     
-    def delete_order(self):
+    def delete_order(self, is_button_call = True):
         
         if self.selected_order_idx is None:
             self.set_feedback('No order selected', 8000)
@@ -1368,23 +1371,37 @@ class calibration_window():
         selected_idx = self.selected_order_idx
         order_nr = self.get_order_nr_from_idx(selected_idx)
         
-        del self.calib_data_dynamic[selected_idx]
-        
         # Deselect the order
-        self.selected_order_nr = None
         self.selected_order_idx = None
         
+        # Delete all drawn stuff
+        self.order_plot_points[selected_idx].remove()
+        self.order_plot_curves[selected_idx].remove()
+        self.order_bound_points[selected_idx].remove()
+        self.spectrum_curves[selected_idx].remove()
+        
+        # Delete all corresponding data
+        del self.calib_data_dynamic[selected_idx]
+        del self.orders_y_px_poly_coefs[selected_idx]
+        del self.orders_y_values[selected_idx]
+        del self.order_plot_points[selected_idx]
+        del self.order_plot_curves[selected_idx]
+        del self.order_bound_points[selected_idx]
+        del self.orders_x_pixels[selected_idx]
+        del self.orders_wavelengths[selected_idx]
+        del self.orders_intensities[selected_idx]
+        del self.spectrum_curves[selected_idx]
+        
+        
+        self.reset_mode(is_button_call = False)
+        
         # Draw plots again
-        self.initialize_plot(do_reset = True)
-        self.update_all()
-        
-        #self.update_spectrum(autoscale = True)
-        
-        self.reset_mode(button_call = False)
+        self.initialize_plot(do_reset = True, redraw_canvas = is_button_call) # TODO: more seamless experience
+        #self.update_all(redraw_canvas = True)
         
         self.set_feedback('Order deleted: ' + str(order_nr), 5000)
     
-    def spectrum_toggle_log(self):
+    def spectrum_toggle_log(self, is_button_call = True):
         current_scale = self.spectrum_ax.get_yscale()
         if current_scale == 'symlog':
             self.spectrum_ax.set_yscale('linear')
@@ -1394,73 +1411,79 @@ class calibration_window():
             current_scale = 'symlog'
         
         # Draw plot again and wait for drawing to finish
-        self.canvas_spectrum.draw()
-        self.canvas_spectrum.flush_events()
+        if is_button_call:
+            self.canvas_spectrum.draw()
+            self.canvas_spectrum.flush_events()
         
         self.set_feedback('New spectrum scale: ' + current_scale)
     
-    def toggle_spectrum_update(self):
+    def toggle_spectrum_update(self, is_button_call = True):
         self.autoupdate_spectrum = not self.autoupdate_spectrum
         
+        # Refresh the plot
         if self.autoupdate_spectrum:
             # Show orders and update the data
             self.show_orders = True
-            self.update_order_curves()
-            self.hide_unhide_orders()
+            self.hide_unhide_orders(redraw_canvas = is_button_call)
+            self.redraw_spectrum(autoscale = True, redraw_canvas = is_button_call)
         
         self.set_feedback('Spectrum updating: ' + str(self.autoupdate_spectrum))
     
-    def update_scale_fn(self):
+    def update_scale_fn(self, is_button_call = True):
         self.autoscale_spectrum = not self.autoscale_spectrum
         self.set_feedback('Spectrum autoscale: ' + str(self.autoscale_spectrum))
     
     
-    def toggle_show_orders(self):
+    def toggle_show_orders(self, is_button_call = True):
         self.show_orders = not self.show_orders
-        self.hide_unhide_orders()
+        self.hide_unhide_orders(redraw_canvas = is_button_call)
         self.set_feedback('Show orders: ' + str(self.show_orders))
     
-    def image_int_down(self):
+    def image_int_down(self, is_button_call = True):
         old_min = self.cbar.vmin
         old_max = self.cbar.vmax
         self.image.set_clim(old_min, old_max / 2)
         
         # Draw plot again and wait for drawing to finish
-        self.canvas.draw()
-        self.canvas.flush_events() 
+        if is_button_call:
+            self.canvas.draw()
+            self.canvas.flush_events() 
         
         self.set_feedback('New max: ' + '{:.3e}'.format(old_max / 2), 5000)
     
-    def image_int_up(self):
+    def image_int_up(self, is_button_call = True):
         old_min = self.cbar.vmin
         old_max = self.cbar.vmax
         self.image.set_clim(old_min, old_max * 5)
         
         # Draw plot again and wait for drawing to finish
-        self.canvas.draw()
-        self.canvas.flush_events() 
+        if is_button_call:
+            self.canvas.draw()
+            self.canvas.flush_events() 
         
         self.set_feedback('New max: ' + '{:.3e}'.format(old_max * 5), 5000)
     
-    def image_int_min_down(self):
+    def image_int_min_down(self, is_button_call = True):
         old_min = self.cbar.vmin
         old_max = self.cbar.vmax
         self.image.set_clim(old_min / 2, old_max)
         
         # Draw plot again and wait for drawing to finish
-        self.canvas.draw()
-        self.canvas.flush_events() 
+        if is_button_call:
+            self.canvas.draw()
+            self.canvas.flush_events() 
         
         self.set_feedback('New min: ' + '{:.3e}'.format(old_min / 2), 5000)
     
-    def image_int_min_up(self):
+    def image_int_min_up(self, is_button_call = True):
         old_min = self.cbar.vmin
         old_max = self.cbar.vmax
         self.image.set_clim(old_min * 5, old_max)
         
         # Draw plot again and wait for drawing to finish
-        self.canvas.draw()
-        self.canvas.flush_events() 
+        if is_button_call:
+            self.canvas.draw()
+            self.canvas.flush_events() 
         
         self.set_feedback('New min: ' + '{:.3e}'.format(old_min * 5), 5000)
     
@@ -1523,9 +1546,8 @@ class calibration_window():
         if self.selected_order_idx == best_order_idx:
             
             self.selected_order_idx = None
-            self.selected_order_nr = None
             
-            self.update_one_order_curve_color(best_order_idx)
+            self.redraw_one_order_curve_color(best_order_idx, redraw_canvas = True)
             self.set_feedback('Order ' + str(best_order_idx + self.first_order_nr) + ' deselected')
         
         # Select
@@ -1533,19 +1555,19 @@ class calibration_window():
             last_order_idx = self.selected_order_idx
             
             self.selected_order_idx = best_order_idx
-            self.selected_order_nr = self.get_order_nr_from_idx(best_order_idx)
             
             # Repaint last selection
-            self.update_one_order_curve_color(last_order_idx)
+            self.redraw_one_order_curve_color(last_order_idx)
             
             # Repaint new selection
-            self.update_one_order_curve_color(best_order_idx)
+            self.redraw_one_order_curve_color(best_order_idx, redraw_canvas = True)
             self.set_feedback('Order ' + str(best_order_idx + self.first_order_nr) + ' selected')
     
     
+    # Move the closest point of the selected order to the location of the click
     def order_click(self, click_point):
         
-        if self.selected_order_nr is None:
+        if self.selected_order_idx is None:
             self.set_feedback('Order mode but none selected')
             return
         
@@ -1561,31 +1583,36 @@ class calibration_window():
             if distance < min_distance:
                 best_point_idx = idx
                 min_distance = distance
-                best_point = order.points[idx]
+                #best_point = order.points[idx]
         
         #print('best: ', best_point_idx, best_point.x, best_point.y)
         
-        # edit point
-        self.calib_data_dynamic[self.selected_order_idx].points[best_point_idx] = click_point # TODO: delete hack 
-        self.calib_data_dynamic[self.selected_order_idx].update()
+        # edit point, automatically updates
+        self.calib_data_dynamic[self.selected_order_idx].overwrite_point(best_point_idx, click_point)
         
+        self.recalc_data_point_moved(redraw_canvas = True)
         
+    
+    # Must not take local order_idx as argument because self.sort_orders() doesn't change it
+    def recalc_data_point_moved(self, redraw_canvas = False):
         # sort orders by average y values, this might change order nrs
         self.sort_orders()
         
+        # Recalculate stuff for that order curve on image (coefficients and y-values)
+        self.update_image_order_data(self.selected_order_idx)
         
-        # TODO: update only the selected order and all bounds
-        self.update_order_curves()
+        # There's new radius and point height, only intensities changed
+        self.overwrite_intensities()
         
-        # Update spectrum data with reordered orders
-        self.update_spectrum_data()
+        # Disable orders that are too close to the top edge
+        self.check_top_orders_proximity()
         
-        # Redraw plot
-        if self.autoupdate_spectrum and (not self.program_mode is None):
-            self.update_spectrum()
-       
+        # Redraw plots
+        self.redraw_order_curves(redraw_canvas = redraw_canvas)
+        self.redraw_spectrum(autoscale = False, redraw_canvas = redraw_canvas)
     
-    def shift_orders_up(self, shift_amount = 0, button_call = True):
+    
+    def shift_orders_up(self, shift_amount = 0, is_button_call = True):
         if shift_amount == 0:
             return
         
@@ -1597,23 +1624,24 @@ class calibration_window():
             
             for point in order.points:
                 point.y -= shift_amount # shift up, so coordinate decreases
+         
+        self.update_point_instances()
+        self.update_image_orders_data()
+        self.overwrite_intensities()
+        
+        # Disable orders that are too close to the top edge
+        self.check_top_orders_proximity()
+        
+        # update visuals
+        if is_button_call:
+            self.redraw_order_curves(redraw_canvas = is_button_call)
+            self.redraw_spectrum(autoscale = True, redraw_canvas = is_button_call)
         
         self.set_feedback('Orders shifted up by ' + str(shift_amount) + ' px')
         self.set_feedback(f'New total shift up: {self.total_shift_up}')
         
-        # update visuals
-        if button_call:
-            self.update_point_instances()
-            self.update_order_curves()
-            self.calculate_all_bounds(initialize_x = True)
-            
-            # Recalculate intensities
-            for order_idx in range(len(self.calib_data_dynamic)):
-                self.update_spectrum_data_list(order_idx, self.orders_intensities, self.calc_order_intensities)
-            
-            self.update_spectrum(autoscale = True)
     
-    def shift_orders_right(self, shift_amount = 0, button_call = True):
+    def shift_orders_right(self, shift_amount = 0, is_button_call = True):
         if shift_amount == 0:
             return
         
@@ -1628,595 +1656,162 @@ class calibration_window():
                 for point in order.points:
                     point.x += shift_amount # shift right
             
+        self.update_point_instances()
+        self.overwrite_bounds_data()
+        self.update_image_orders_data()
+        self.overwrite_spectrum_data()
         
-        self.update_bounds_data()
+        # update visuals
+        if is_button_call:
+            self.redraw_order_curves(redraw_canvas = is_button_call)
+            self.redraw_spectrum(autoscale = True, redraw_canvas = is_button_call)
+        
         
         self.set_feedback('Orders shifted right by ' + str(shift_amount) + ' px')
         self.set_feedback(f'New total shift right: {self.total_shift_right}')
-        
-        
-        # update visuals
-        if button_call:
-            self.update_point_instances()
-            self.update_order_curves()
-            self.calculate_all_bounds(initialize_x = True)
-            self.update_spectrum_data()
-            self.update_spectrum(autoscale = True)
-    
     
     
     
     # Reads total shift up and right and resets the orders location, so that total shift is 0
-    def reset_shift(self):
+    def reset_shift(self, is_button_call = True):
         up = self.total_shift_up
         right = self.total_shift_right
         
-        self.shift_orders_up(shift_amount = self.total_shift_up_orig - self.total_shift_up, button_call = False)
-        self.shift_orders_right(shift_amount = self.total_shift_right_orig - self.total_shift_right, button_call = False)
+        self.shift_orders_up(shift_amount = self.total_shift_up_orig - self.total_shift_up, is_button_call = False)
+        self.shift_orders_right(shift_amount = self.total_shift_right_orig - self.total_shift_right, is_button_call = False)
         
         # Redraw stuff
         self.update_point_instances()
-        self.update_order_curves()
-        self.calculate_all_bounds(initialize_x = True)
-        self.update_spectrum_data()
-        self.update_spectrum(autoscale = True)
+        self.redraw_order_curves(redraw_canvas = is_button_call)
+        self.overwrite_spectrum_data()
+        self.redraw_spectrum(autoscale = True, redraw_canvas = is_button_call)
         
         self.set_feedback(f'Shifts reset. Relative shifts (up, right): {-up}, {-right}')
         self.set_feedback(f'New total shifts (up, right): {self.total_shift_up}, {self.total_shift_right}')
-        
-    
-    #######################################################################################
-    # Initialize Matplotlib plot
-    #######################################################################################
-    
-    
-    def initialize_plot(self, do_reset = False):
-        
-        if do_reset:
-            self.clear_plots()
-        
-        # Draw main image
-        self.draw_plot(identificator = '')
-        
-        # Draw calibration curves
-        self.draw_calibr_curves()
-        
-        # Initialize bounds of diffraction orders, requires plots to be drawn
-        self.calculate_all_bounds(initialize_x = True)
-        
-        # TODO: fix bounds not being drawn initially (because self.calculate_bounds assumes plotted curves)
-        self.update_order_curves()
-        
-        # Disable orders that are too close to the top edge
-        self.check_top_orders_proximity()
-        
-        # Calculate x-points, wavelengths, quadratic coefficients for the conversion, corresponding intensities
-        self.update_spectrum_data()
-        
-        # Compile spectrum from diffraction orders and the bounds
-        self.draw_spectrum()
-        
-        # Draw plots again and wait for drawing to finish
-        self.canvas.draw()
-        self.canvas.flush_events()
-        self.canvas_spectrum.draw()
-        self.canvas_spectrum.flush_events() 
-    
-    
-    
-    def clear_plots(self):
-        # Clear plot
-        #self.photo_fig.clf()
-        self.canvas._tkcanvas.destroy()
-        self.plot_toolbar.destroy()
-        
-        # Clear spectrum
-        self.canvas_spectrum._tkcanvas.destroy()
-        self.spectrum_toolbar.destroy()
-        #self.canvas_spectrum
-        #self.spectrum_fig
-        #self.spectrum_ax
-        #self.spectrum_curves
-        
-        # Clear saved line objects
-        self.order_plot_curves = []
-        self.order_plot_points = []
-        self.order_poly_coefs = []
-        self.order_bound_points = []
-    
-    # Draw main heatmap
-    
-    def draw_plot(self, identificator = ''):
-        self.photo_fig = plt.figure()
-        
-        # Attach figure to the Tkinter frame
-        self.canvas = FigureCanvasTkAgg(self.photo_fig, self.frame_image)
-        self.plot_toolbar = NavigationToolbar2Tk(self.canvas, self.frame_image)
-        self.plot_toolbar.update()
-        self.canvas._tkcanvas.pack(fill='both', expand=1, side = 'top')
-        
-        # x-axis to the top of the image
-        self.plot_ax = self.photo_fig.gca()
-        self.plot_ax.xaxis.tick_top()
-        
-        # Create an array for the heatmap which has only positive values (for log scale)
-        visual_array = np.copy(self.photo_array)
-        smallest_nonzero = np.min(visual_array[visual_array > 0])
-        visual_array[visual_array < smallest_nonzero] = smallest_nonzero
-        
-        # Show image and colorbar
-        self.image = plt.imshow(visual_array, norm = 'log', aspect = 'auto') # symlog scale min can't be modified
-        self.cbar = plt.colorbar()
-        self.photo_fig.tight_layout()
-        
-        self.canvas.mpl_connect('button_press_event', self.plot_click_callback)
-        #matplotlib.backend_bases.MouseEvent
-        
-        
-        
-    
-    def draw_calibr_curves(self):
-        self.plot_orders()
-        self.draw_all_bounds()
-    
-    
-    # Iterate over diffraction orders and plot them
-    
-    def plot_orders(self):
-        x_values = np.arange(self.photo_array.shape[0])
-        for idx in range(len(self.calib_data_dynamic)):
-            order = self.calib_data_dynamic[idx]
-            self.plot_order(order, x_values)
-        
-    
-    def plot_order(self, order, x_values = None, color = 'red'):
-        if x_values is None:
-            x_values = np.arange(self.max_x_idx + 1)
-        
-        
-        # Get line data
-        curve_array, poly_coefs = get_polynomial_points(order, self.max_x_idx + 1)
-        self.order_poly_coefs.append(poly_coefs)
-        
-        # Plot curve
-        curve, = self.plot_ax.plot(x_values, curve_array, color)
-        self.order_plot_curves.append(curve)
-        
-        # Plot calibration points
-        curve_points, = self.plot_ax.plot(order.xlist, order.ylist, color = mcolors.CSS4_COLORS['peru'], marker = 'o', linestyle = '', markersize = 4)
-        self.order_plot_points.append(curve_points)
-        
-    
-    # Draw points for the bounds even if they aren't calculated correctly yet
-    
-    def draw_all_bounds(self):
-        for order_idx in range(len(self.calib_data_dynamic)):
-            self.draw_bounds(order_idx)
-    
-    def draw_bounds(self, order_idx):
-        x_start, x_end, y_start, y_end = self.calculate_bounds(order_idx)
-        
-        bound_points, = self.plot_ax.plot([x_start, x_end], [y_start, y_end], color = 'k', marker = 'x', linestyle = '', markersize = 2)
-        self.order_bound_points.append(bound_points)
-    
-    
-    def draw_spectrum(self):
-        self.spectrum_fig = plt.figure()
-        
-        # Attach figure to the Tkinter frame
-        self.canvas_spectrum = FigureCanvasTkAgg(self.spectrum_fig, self.frame_spectrum)
-        self.spectrum_toolbar = NavigationToolbar2Tk(self.canvas_spectrum, self.frame_spectrum)
-        self.spectrum_toolbar.update()
-        self.canvas_spectrum._tkcanvas.pack(fill='both', expand=1, side = 'top')
-        
-        self.spectrum_ax = self.spectrum_fig.gca()
-        
-        # Plot curve with alternating colors for different orders
-        self.spectrum_curves = [] # from right to left
-        #wavelengths_list = self.orders_wavelengths[::-1] # reverse order
-        #intensities_list = self.orders_intensities[::-1]
-        wavelengths_list = self.orders_wavelengths
-        intensities_list = self.orders_intensities
-        
-        for order_idx in range(len(self.calib_data_dynamic)):
-            wavelengths = wavelengths_list[order_idx]
-            intensities = intensities_list[order_idx]
-            
-            color = self.get_order_color_spectr(order_idx)
-            
-            order_curve, = self.spectrum_ax.plot(wavelengths, intensities, color=color, label=f'Order {order_idx + self.first_order_nr}')
-            self.spectrum_curves.append(order_curve)
-        
-        self.rescale_spectrum()
-        
-        
-    # Rescale spectrum to show all data
-    def rescale_spectrum(self):
-        # Get bounds for scaling
-        x_values, z_values = self.compile_full_spectrum()
-        min_wl = np.min(x_values)
-        max_wl = np.max(x_values)
-        min_int = np.min(z_values)
-        max_int = np.max(z_values)
-        
-        # rescale to fit
-        offset_x = max_wl * 0.01
-        offset_y = max_int * 0.03
-        self.spectrum_ax.set_xlim(min_wl - offset_x, max_wl + offset_x)
-        self.spectrum_ax.set_ylim(min_int - offset_y, max_int + offset_y)
     
     
     #######################################################################################
-    # Update visual things
+    # Initialize or update internal data
+    # Gets run after loading the data of a sample after self.calib_data_dynamic (calibration data) has been initialized
     #######################################################################################
     
-    def clear_feedback(self):
-        #self.feedback_text.config(text = '')
-        self.feedback_text.delete("1.0", tkinter.END)
     
-    def set_feedback(self, string, delay = 5000):
-        delay = clip(delay, 2000, 10000)
-        
-        self.feedback_text.insert("1.0", string + '\n')
-        
-        #self.feedback_text.config(text = string)
-        self.feedback_text.after(delay, self.clear_feedback) # clear feedback after delay
-    
-    
-    
-    def update_all(self):
-        
-        # Deselect order
-        self.selected_order_idx = None
-        
-        self.update_point_instances()
-        
-        # sort orders by average y values
-        self.sort_orders()
-        
-        self.update_order_curves()
-        
-        
-        self.calculate_all_bounds(initialize_x = True)
-        
-        # Disable orders that are too close to the top edge
-        self.check_top_orders_proximity()
-        
-        self.update_spectrum_data()
-        self.update_spectrum(autoscale = True)
-        
-        # Draw things again and wait for drawing to finish
-        self.canvas.draw()
-        self.canvas.flush_events()
-        self.canvas_spectrum.draw()
-        self.canvas_spectrum.flush_events()
-    
-    # Update instances of point classes
-    
+    # Update instances of point classes of drawn orders
     def update_point_instances(self):
         for idx in range(len(self.calib_data_dynamic)):
             self.calib_data_dynamic[idx].update()
     
     
     
-    # Redraw horizontal calibration curves
-    def update_order_curves(self):
-        
-        if not self.show_orders:
-            return
-        
-        # Iterate over diffraction orders
-        for order_idx in range(len(self.calib_data_dynamic)):
-            self.update_one_order_curve(order_idx)
-            
-        self.update_all_bounds()
-            
-            
-        # Draw plot again and wait for drawing to finish
-        self.canvas.draw()
-        self.canvas.flush_events() 
-    
-    # Update the image and spectrum order curve color
-    def update_one_order_curve_color(self, order_idx, single_call = True, set_img_color = None, set_spectr_color = None):
-        if order_idx is None:
-            return
-        
-        self.update_one_order_curve_color_img(order_idx, single_call = single_call, set_color = set_img_color)
-        self.update_one_order_curve_color_spectr(order_idx, single_call = single_call, set_color = set_spectr_color)
-    
-    
-    def update_one_order_curve_color_img(self, order_idx, single_call = True, set_color = None):
-        if (order_idx is None) or (self.order_plot_curves is None):
-            return
-        
-        # Out of bounds
-        if order_idx > len(self.order_plot_curves) - 1:
-            return
-        
-        color = self.get_order_color_img(order_idx) if set_color is None else set_color
-        
-        # Color already correct
-        if self.order_plot_curves[order_idx].get_color() == color:
-            return
-        
-        # Change color
-        self.order_plot_curves[order_idx].set_color(color)
-        
-        # Redraw
-        self.canvas.draw()
-        self.canvas.flush_events() 
-    
-    
-    def update_one_order_curve_color_spectr(self, order_idx, single_call = True, set_color = None):
-        if (order_idx is None) or (self.spectrum_curves is None):
-            return
-        
-        # Out of bounds
-        if order_idx > len(self.spectrum_curves) - 1:
-            return
-        
-        color = self.get_order_color_spectr(order_idx) if set_color is None else set_color
-        
-        # Color already correct
-        if self.spectrum_curves[order_idx].get_color() == color:
-            return
-        
-        # Change color
-        self.spectrum_curves[order_idx].set_color(color)
-        
-        # Redraw
-        self.canvas_spectrum.draw()
-        self.canvas_spectrum.flush_events()
-    
-    
-    def update_one_order_curve(self, order_idx, single_call = False, recalculate = True, set_color = None):
-        
-        if order_idx is None:
-            return
-        
-        if recalculate:
-            order = self.calib_data_dynamic[order_idx]
-            
-            # curve
-            curve_array, poly_coefs = get_polynomial_points(order, self.max_x_idx + 1)
-            self.order_poly_coefs[order_idx] = poly_coefs
-            self.order_plot_curves[order_idx].set_ydata(curve_array)
-            
-            # Calculate the new bounds for that order
-            self.update_bounds_data(idx = order_idx)
-            
-            
-            # points
-            self.order_plot_points[order_idx].set_xdata(order.xlist)
-            self.order_plot_points[order_idx].set_ydata(order.ylist)
-        
-        if not set_color is None:
-            self.order_plot_curves[order_idx].set_color(set_color)
-        
-        # Draw plot again and wait for drawing to finish
-        if single_call:
-            self.canvas.draw()
-            self.canvas.flush_events() 
-        
-    
-    def update_all_bounds(self):
-        for idx in range(len(self.calib_data_dynamic)):
-            self.update_one_bounds(idx)
-            
-    # Re-draw bounds
-    def update_one_bounds(self, order_idx):
-        x_start, x_end, y_start, y_end = self.calculate_bounds(order_idx)
-        self.order_bound_points[order_idx].set_xdata([x_start, x_end])
-        self.order_bound_points[order_idx].set_ydata([y_start, y_end])
-        
-    
-    def update_spectrum(self, autoscale = False, force_scale = False, redraw_canvas = True):
-        
-        # Spectrum not yet drawn
-        if self.spectrum_curves is None:
-            return
-        
-        drawn_nr = len(self.calib_data_dynamic)
-        plotted_nr = len(self.spectrum_curves)
-        
-        wavelengths_list = self.orders_wavelengths # from right to left
-        intensities_list = self.orders_intensities
-        
-        # Iterate over orders that user drew
-        for order_idx in range(drawn_nr):
-            wavelengths = wavelengths_list[order_idx]
-            intensities = intensities_list[order_idx]
-            
-            # Check if order plotted previously
-            if order_idx <= plotted_nr - 1:
-                order_curve = self.spectrum_curves[order_idx]
-                color = self.get_order_color_spectr(order_idx)
-                
-                # Update curve data
-                order_curve.set_xdata(wavelengths)
-                order_curve.set_ydata(intensities)
-                order_curve.set_color(color)
-            
-            # Plot the order
-            else:
-                color = self.get_order_color_spectr(order_idx)
-                order_curve, = self.spectrum_ax.plot(wavelengths, intensities, color=color, label=f'Order {order_idx + self.first_order_nr}')
-                self.spectrum_curves.append(order_curve)
-            
-        
-        # Delete plotted curves that have been removed by the user
-        if plotted_nr > drawn_nr:
-            for idx in range(drawn_nr, plotted_nr):
-                line = self.spectrum_curves[idx]
-                line.remove() # clear from plot
-                del self.spectrum_curves[idx] # delete list element
-        
-        
-        # rescale to fit
-        if force_scale or (self.autoscale_spectrum and autoscale):
-            self.rescale_spectrum()
-        
-        # Draw plot again and wait for drawing to finish
-        if redraw_canvas:
-            self.canvas_spectrum.draw()
-            self.canvas_spectrum.flush_events() 
-    
-    
-    def hide_unhide_orders(self):
-        
-        # Iterate over diffraction orders
-        for idx in range(len(self.calib_data_dynamic)):
-            #order = self.calib_data_dynamic[idx]
-            
-            self.order_plot_curves[idx].set_visible(self.show_orders)
-            self.order_plot_points[idx].set_visible(self.show_orders)
-            self.order_bound_points[idx].set_visible(self.show_orders)
-        
-        # Draw plot again and wait for drawing to finish
-        self.canvas.draw()
-        self.canvas.flush_events() 
-    
-    
-    def get_order_color_img(self, order_idx):
-        if order_idx is None:
-            return
-        
-        # Default - red
-        color = 'red'
-        
-        # Out of bounds - gray
-        if not self.calib_data_dynamic[order_idx].use_order:
-            color = 'darkgray'
-        
-        # Selected - white
-        if order_idx == self.selected_order_idx:
-            color = 'white'
-        
-        return color
-    
-    def get_order_color_spectr(self, order_idx):
-        if order_idx is None:
-            return
-        
-        # Default - pink/purple
-        if order_idx % 2 == 0:
-            color = 'tab:pink'
+    # Get the order bounds with the corresponding shift
+    # Sophi has order bounds (px) the same no matter how far right the actual image has shifted. 
+    # I have doubts about that they did the proccess correctly, if Sophi tooltips show the actual data for the given order.
+    # Needs to be called every time there is horizontal shift
+    def overwrite_bounds_data(self, idx = None):
+        if idx is None:
+            self.bounds_px = bounds_data[:, [1,2]] + self.origin_shift_right + self.total_shift_right
         else:
-            color = 'tab:purple'
-        
-        # Out of bounds - gray
-        if not self.calib_data_dynamic[order_idx].use_order:
-            color = 'darkgray'
-        
-        # Selected - black
-        if order_idx == self.selected_order_idx:
-            color = 'deepskyblue'
-        
-        return color
-        
-    
-    #######################################################################################
-    # Misc
-    #######################################################################################
+            self.bounds_px[idx] = bounds_data[idx, [1,2]] + self.origin_shift_right + self.total_shift_right
     
     
-    def check_order_amount_match(self):
-        dynamic_len = len(self.calib_data_dynamic) # nr of drawn curves
-        static_len = bounds_data.shape[0] # nr of orders in bounds data
+    # Initialize internal data for the orders drawn on the echellogram
+    def initialize_image_orders_data(self):
+        self.orders_y_px_poly_coefs = []
+        self.orders_y_values = []
         
-        # Let user know if drawn orders amount doesn't match with bounds data
-        if dynamic_len != static_len:
-            print(f'Warning! Bounds data has {static_len} rows, but there are {dynamic_len} drawn orders.')
-            self.set_feedback(f'Warning! Bounds data has {static_len} rows, but there are {dynamic_len} drawn orders.', 10000)
-        
-    
-    
-    def calculate_all_bounds(self, initialize_x = False):
         for order_idx in range(len(self.calib_data_dynamic)):
-            self.calculate_bounds(order_idx)
+            self.initialize_image_order_data(order_idx)
     
-    def calculate_bounds(self, order_idx):
+    # Initialize internal data for the one order drawn on the echellogram
+    def initialize_image_order_data(self, order_idx):
+        poly_coefs, y_array = self.get_image_order_data(order_idx)
+        
+        self.orders_y_px_poly_coefs.append(poly_coefs)
+        self.orders_y_values.append(y_array)
+    
+    # Initialize internal data for the orders on the spectrum
+    def initialize_spectr_orders_data(self):
+        self.orders_x_pixels = []
+        self.orders_wavelengths = []
+        self.orders_intensities = []
+        
+        self.overwrite_spectrum_data()
+    
+    
+    # Overwrite internal data for the orders on the spectrum
+    def update_image_orders_data(self):
+        for order_idx in range(len(self.calib_data_dynamic)):
+            self.update_image_order_data(order_idx)
+    
+    # Overwrite internal data for the one order on the spectrum
+    # Needs to be called every time when one order point changes
+    def update_image_order_data(self, order_idx):
+        poly_coefs, y_array = self.get_image_order_data(order_idx)
+        
+        self.orders_y_px_poly_coefs[order_idx] = poly_coefs
+        self.orders_y_values[order_idx] = y_array
+    
+    
+    # Calculate values to use in intialization or updating (image related)
+    def get_image_order_data(self, order_idx):
+        
+        # get regression coeficients for calculating y-pixel values
         order = self.calib_data_dynamic[order_idx]
-        static_idx = self.get_bounds_data_idx(order_idx)
-        [px_start, px_end] = self.bounds_px[static_idx]
+        poly_coefs = np.polynomial.polynomial.polyfit(order.xlist, order.ylist, 2)
         
-        coefs = np.polynomial.polynomial.polyfit(order.xlist, order.ylist, 2)
-        y_start = np.polynomial.polynomial.polyval(px_start, coefs)
-        y_end = np.polynomial.polynomial.polyval(px_end, coefs)
+        # Get y-pixels corresponding to each x-pixel
+        x_array = np.arange(0, self.max_x_idx + 1)
+        y_array = np.polynomial.polynomial.polyval(x_array, poly_coefs)
+        y_array = np.clip(y_array, 0, self.max_y_idx)
         
-        return px_start, px_end, y_start, y_end
+        return poly_coefs, y_array
     
-    
-    # Assumes that each order instance has been updated (avg_y is correct)
-    def sort_orders(self, sort_plots = True):
-        
-        # Get indices to sort by
-        y_values = [obj.avg_y for obj in self.calib_data_dynamic]
-        sorted_idx = np.argsort(y_values) # top curves are low order nrs
-        
-        # Sort orders
-        self.calib_data_dynamic = [self.calib_data_dynamic[idx] for idx in sorted_idx]
-        
-        # Sort corresponding plot objects if they're initialized
-        if sort_plots:
-            self.order_plot_points = [self.order_plot_points[idx] for idx in sorted_idx]
-            self.order_poly_coefs = [self.order_poly_coefs[idx] for idx in sorted_idx]
-            self.order_plot_curves = [self.order_plot_curves[idx] for idx in sorted_idx]
-            self.order_bound_points = [self.order_bound_points[idx] for idx in sorted_idx]
-            self.spectrum_curves = [self.spectrum_curves[idx] for idx in sorted_idx]
-        
-        # Re-select the correct order
-        idxs = np.where(sorted_idx == self.selected_order_idx)[0] # get indices of rows where idx is the same, can be None
-        self.selected_order_idx = None if len(idxs) == 0 else idxs[0]
-        
-    
-    
-   
-    # Get z-values of corresponding x and y values and cut them according to left and right bounds
-    def compile_full_spectrum(self):
-        x_values = np.concatenate(self.orders_wavelengths[::-1]) # reverse order
-        z_values = np.concatenate(self.orders_intensities[::-1]) # reverse order
-        return x_values, z_values
-    
-    # Iterate over orders and save the order number as a complement to the x and z values
-    def get_spectrum_order_nrs(self):
-        order_nrs_list = []
-        for order_idx in range(len(self.calib_data_dynamic) - 1, -1, -1): # reverse order
-            order_nr = self.get_order_nr_from_idx(order_idx)
-            order_nrs_list.append(np.full(len(self.orders_wavelengths[order_idx]), order_nr))
-        
-        order_nrs = np.concatenate(order_nrs_list)
-        return order_nrs
     
     # Iterate over all orders and update/initialize the data associated with the spectrum (wl and int etc.)
-    def update_spectrum_data(self):
+    def overwrite_spectrum_data(self):
         for order_idx in range(len(self.calib_data_dynamic)):
-            self.update_order_spectrum_data(order_idx)
+            self.overwrite_spectrum_order_data(order_idx)
             
     
     # Update/initialize the data associated with the spectrum (wl and int etc.) for the given order
-    def update_order_spectrum_data(self, order_idx):
+    def overwrite_spectrum_order_data(self, order_idx):
         # Get x_pixel values between bounds (e.g. array of ints from 480 to 701)
-        self.update_spectrum_data_list(order_idx, self.orders_x_pixels, self.calc_order_x_pixels)
+        self.overwrite_spectrum_data_list(order_idx, self.orders_x_pixels, self.calc_order_x_pixels)
         
         # Get wavelengths corresponding to the x_pixels
-        self.update_spectrum_data_list(order_idx, self.orders_wavelengths, self.calc_order_wavelengths)
+        self.overwrite_spectrum_data_list(order_idx, self.orders_wavelengths, self.calc_order_wavelengths)
         
         # Get intensities (integral over few px vertically) corresponding to the x_pixels
-        self.update_spectrum_data_list(order_idx, self.orders_intensities, self.calc_order_intensities)
+        self.overwrite_spectrum_data_list(order_idx, self.orders_intensities, self.calc_order_intensities)
     
     
     # Either initialize or update spectrum data lists inline (values_fn output goes into array)
-    def update_spectrum_data_list(self, order_idx, array, values_fn):
+    def overwrite_spectrum_data_list(self, order_idx, array, values_fn):
         list_len = len(array)
         if order_idx > list_len:
-            raise Exception(f'update_spectrum_data_list() | Trying to modify uninitialized order_idx {order_idx} when length is {list_len}. function: {values_fn}')
+            raise Exception(f'overwrite_spectrum_data_list() | Trying to modify uninitialized order_idx {order_idx} when length is {list_len}. function: {values_fn}')
         
         values = values_fn(order_idx)
         if order_idx == list_len: # Initialize
             array.append(values)
         else: # Update
             array[order_idx] = values
+    
+    # Needs to be called every time there is horizontal shift
+    def overwrite_x_pixels(self):
+        for order_idx in range(len(self.calib_data_dynamic)):
+            self.overwrite_spectrum_data_list(order_idx, self.orders_intensities, self.calc_order_intensities)
+    
+    # Needs to be called every time there is horizontal shift
+    def overwrite_wavelengths(self):
+        for order_idx in range(len(self.calib_data_dynamic)):
+            self.overwrite_spectrum_data_list(order_idx, self.orders_intensities, self.calc_order_intensities)
+    
+    # Needs to be called every time a point on any order moves (radius depends on nearby orders)
+    def overwrite_intensities(self):
+        for order_idx in range(len(self.calib_data_dynamic)):
+            self.overwrite_spectrum_data_list(order_idx, self.orders_intensities, self.calc_order_intensities)
+    
     
     # Get x-pixel values for current bounds (e.g. array of ints from 480 to 701)
     def calc_order_x_pixels(self, order_idx):
@@ -2255,9 +1850,8 @@ class calibration_window():
         
         # Get coordinates of the center pixels 
         x_array = self.orders_x_pixels[order_idx]
-        y_array = np.polynomial.polynomial.polyval(x_array, self.order_poly_coefs[order_idx])
-        #y_array = np.round(y_array).astype(int) # convert to same format as x-values
-        
+        y_array = np.polynomial.polynomial.polyval(x_array, self.orders_y_px_poly_coefs[order_idx])
+        y_array = np.clip(y_array, 0, self.max_y_idx)
         
         # Get z values from Echellogram
         integrals = self.integrate_order_width(x_array, y_array, radius = radius)        
@@ -2448,10 +2042,10 @@ class calibration_window():
     
     
     # Check if top orders are too close to the edge and if so then don't use these
-    def check_top_orders_proximity(self):
+    def check_top_orders_proximity(self, redraw_canvas = False):
         something_changed = False
         
-        max_idx = min(20 + 1, len(self.calib_data_dynamic)) # no point in checking all orders (ignore bottom)
+        max_idx = min(15 + 1, len(self.calib_data_dynamic)) # no point in checking all orders (ignore bottom)
         for order_idx in range(max_idx):
             
             if self.ignore_top_orders and self.if_needs_cutting(order_idx):
@@ -2465,12 +2059,560 @@ class calibration_window():
                 self.calib_data_dynamic[order_idx].use_order = True
             
             
-            self.update_one_order_curve_color(order_idx)
+            self.redraw_one_order_curve_color(order_idx, redraw_canvas = redraw_canvas)
             
         if something_changed:
-            self.update_spectrum(force_scale = True)
+            self.redraw_spectrum(redraw_canvas = redraw_canvas)
     
             
+    
+    
+    #######################################################################################
+    # Initialize Matplotlib plot
+    #######################################################################################
+    
+    
+    def initialize_plot(self, do_reset = False, redraw_canvas = False):
+        # Clear saved plotted objects
+        self.order_plot_points = []
+        self.order_plot_curves = []
+        self.order_bound_points = []
+        
+        
+        if do_reset:
+            self.clear_plots()
+        
+        # Draw main image
+        self.draw_plot(identificator = '')
+        
+        # Draw calibration curves
+        self.draw_calibr_curves()
+        
+        #self.redraw_order_curves()
+        
+        # Disable orders that are too close to the top edge
+        self.check_top_orders_proximity()
+        
+        # Calculate x-points, wavelengths, quadratic coefficients for the conversion, corresponding intensities
+        self.overwrite_spectrum_data()
+        
+        # Compile spectrum from diffraction orders and the bounds
+        self.draw_spectrum()
+        
+        # Draw plots again and wait for drawing to finish
+        if redraw_canvas:
+            self.canvas.draw()
+            self.canvas.flush_events()
+            self.canvas_spectrum.draw()
+            self.canvas_spectrum.flush_events() 
+    
+    
+    
+    def clear_plots(self):
+        # Clear plot
+        #self.photo_fig.clf()
+        self.canvas._tkcanvas.destroy()
+        self.plot_toolbar.destroy()
+        
+        # Clear spectrum
+        self.canvas_spectrum._tkcanvas.destroy()
+        self.spectrum_toolbar.destroy()
+        #self.canvas_spectrum
+        #self.spectrum_fig
+        #self.spectrum_ax
+        #self.spectrum_curves
+        
+    
+    # Draw main heatmap
+    def draw_plot(self, identificator = ''):
+        self.photo_fig = plt.figure()
+        
+        # Attach figure to the Tkinter frame
+        self.canvas = FigureCanvasTkAgg(self.photo_fig, self.frame_image)
+        self.plot_toolbar = NavigationToolbar2Tk(self.canvas, self.frame_image)
+        self.plot_toolbar.update()
+        self.canvas._tkcanvas.pack(fill='both', expand=1, side = 'top')
+        
+        # x-axis to the top of the image
+        self.plot_ax = self.photo_fig.gca()
+        self.plot_ax.xaxis.tick_top()
+        
+        # Create an array for the heatmap which has only positive values (for log scale)
+        visual_array = np.copy(self.photo_array)
+        smallest_nonzero = np.min(visual_array[visual_array > 0])
+        visual_array[visual_array < smallest_nonzero] = smallest_nonzero
+        
+        # Show image and colorbar
+        self.image = plt.imshow(visual_array, norm = 'log', aspect = 'auto') # symlog scale min can't be modified
+        self.cbar = plt.colorbar()
+        self.photo_fig.tight_layout()
+        
+        self.canvas.mpl_connect('button_press_event', self.plot_click_callback)
+        #matplotlib.backend_bases.MouseEvent
+        
+        
+        
+    
+    def draw_calibr_curves(self):
+        self.plot_orders()
+        self.draw_all_bounds()
+    
+    
+    # Iterate over diffraction orders and plot them
+    
+    def plot_orders(self):
+        x_values = np.arange(self.photo_array.shape[1])
+        for order_idx in range(len(self.calib_data_dynamic)):
+            self.plot_order(order_idx, x_values)
+    
+    
+    def plot_order(self, order_idx, x_values = None, color = 'red'):
+        if x_values is None:
+            x_values = np.arange(self.max_x_idx + 1)
+        
+        order = self.calib_data_dynamic[order_idx]
+        
+        # Get line y-data
+        y_values = self.orders_y_values[order_idx]
+        
+        # Plot curve
+        curve, = self.plot_ax.plot(x_values, y_values, color)
+        self.order_plot_curves.append(curve)
+        
+        # Plot calibration points
+        curve_points, = self.plot_ax.plot(order.xlist, order.ylist, color = mcolors.CSS4_COLORS['peru'], marker = 'o', linestyle = '', markersize = 4)
+        self.order_plot_points.append(curve_points)
+        
+    
+    # Draw points for the bounds even if they aren't calculated correctly yet
+    
+    def draw_all_bounds(self):
+        for order_idx in range(len(self.calib_data_dynamic)):
+            self.draw_bounds(order_idx)
+    
+    def draw_bounds(self, order_idx):
+        x_start, x_end, y_start, y_end = self.calculate_order_bounds(order_idx)
+        
+        bound_points, = self.plot_ax.plot([x_start, x_end], [y_start, y_end], color = 'k', marker = 'x', linestyle = '', markersize = 2)
+        self.order_bound_points.append(bound_points)
+    
+    
+    def draw_spectrum(self):
+        self.spectrum_fig = plt.figure()
+        
+        # Attach figure to the Tkinter frame
+        self.canvas_spectrum = FigureCanvasTkAgg(self.spectrum_fig, self.frame_spectrum)
+        self.spectrum_toolbar = NavigationToolbar2Tk(self.canvas_spectrum, self.frame_spectrum)
+        self.spectrum_toolbar.update()
+        self.canvas_spectrum._tkcanvas.pack(fill='both', expand=1, side = 'top')
+        
+        self.spectrum_ax = self.spectrum_fig.gca()
+        
+        # Plot curve with alternating colors for different orders
+        self.spectrum_curves = [] # from right to left
+        for order_idx in range(len(self.calib_data_dynamic)):
+            self.draw_spectrum_order(order_idx)
+        self.rescale_spectrum()
+    
+    
+    # Draw one extra order on spectrum (append)
+    def draw_spectrum_order(self, order_idx):
+        wavelengths = self.orders_wavelengths[order_idx] # from right to left
+        intensities = self.orders_intensities[order_idx] # from right to left
+        
+        color = self.get_order_color_spectr(order_idx)
+        order_curve, = self.spectrum_ax.plot(wavelengths, intensities, color=color, label=f'Order {order_idx + self.first_order_nr}')
+        self.spectrum_curves.append(order_curve)
+    
+    
+    # Rescale spectrum to show all data
+    def rescale_spectrum(self):
+        # Get bounds for scaling
+        x_values, z_values = self.compile_full_spectrum()
+        min_wl = np.min(x_values)
+        max_wl = np.max(x_values)
+        min_int = np.min(z_values)
+        max_int = np.max(z_values)
+        
+        # rescale to fit
+        offset_x = max_wl * 0.01
+        offset_y = max_int * 0.03
+        self.spectrum_ax.set_xlim(min_wl - offset_x, max_wl + offset_x)
+        self.spectrum_ax.set_ylim(min_int - offset_y, max_int + offset_y)
+    
+    
+    #######################################################################################
+    # Update visual things
+    #######################################################################################
+    
+    def clear_feedback(self):
+        #self.feedback_text.config(text = '')
+        self.feedback_text.delete("1.0", tkinter.END)
+    
+    def set_feedback(self, string, delay = 5000):
+        delay = clip(delay, 2000, 10000)
+        
+        self.feedback_text.insert("1.0", string + '\n')
+        
+        #self.feedback_text.config(text = string)
+        self.feedback_text.after(delay, self.clear_feedback) # clear feedback after delay
+    
+    
+    
+    def update_all(self, redraw_canvas = False):
+        
+        # Deselect order
+        self.selected_order_idx = None
+        
+        # Update points of orders
+        self.update_point_instances()
+        
+        self.overwrite_bounds_data()
+        self.update_image_orders_data()
+        
+        
+        # sort orders by average y values
+        idx_changed = self.sort_orders()
+        
+        self.overwrite_spectrum_data()
+        
+        
+        # Disable orders that are too close to the top edge
+        self.check_top_orders_proximity()
+        
+        
+        self.redraw_order_curves()
+        self.redraw_spectrum(autoscale = True)
+        
+        # Draw plot again and wait for drawing to finish
+        if redraw_canvas:
+            self.canvas.draw()
+            self.canvas_spectrum.draw()
+            self.canvas.flush_events()
+            self.canvas_spectrum.flush_events()
+    
+    
+    
+    
+    # Redraw horizontal calibration curves
+    def redraw_order_curves(self, redraw_canvas = False):
+        
+        if not self.show_orders:
+            return
+        
+        # Iterate over diffraction orders
+        for order_idx in range(len(self.calib_data_dynamic)):
+            self.redraw_one_order_curve(order_idx, redraw_canvas = False)
+            
+        self.redraw_all_bounds_points()
+        
+        # Draw plot again and wait for drawing to finish
+        if redraw_canvas:
+            self.canvas.draw()
+            self.canvas.flush_events() 
+    
+    # Modify how the curve is drawn
+    def redraw_one_order_curve(self, order_idx, redraw_canvas = False):
+        if order_idx is None:
+            return
+        
+        order = self.calib_data_dynamic[order_idx]
+        
+        # Get line y-data
+        y_values = self.orders_y_values[order_idx]
+        self.order_plot_curves[order_idx].set_ydata(y_values)
+        
+        # points
+        self.order_plot_points[order_idx].set_xdata(order.xlist)
+        self.order_plot_points[order_idx].set_ydata(order.ylist)
+        
+        # Draw plot again and wait for drawing to finish
+        if redraw_canvas:
+            self.canvas.draw()
+            self.canvas.flush_events() 
+    
+    
+    # Update the image and spectrum order curve color
+    def redraw_one_order_curve_color(self, order_idx, single_call = True, set_img_color = None, set_spectr_color = None, redraw_canvas = False):
+        if order_idx is None:
+            return
+        
+        self.redraw_one_order_curve_color_img(order_idx, single_call = single_call, set_color = set_img_color)
+        self.redraw_one_order_curve_color_spectr(order_idx, single_call = single_call, set_color = set_spectr_color)
+        
+        # Draw plot again and wait for drawing to finish
+        if redraw_canvas:
+            self.canvas.draw()
+            self.canvas.flush_events()
+            self.canvas_spectrum.draw()
+            self.canvas_spectrum.flush_events()
+    
+    
+    def redraw_one_order_curve_color_img(self, order_idx, single_call = True, set_color = None, redraw_canvas = False):
+        if (order_idx is None) or (self.order_plot_curves is None):
+            return
+        
+        # Out of bounds
+        if order_idx > len(self.order_plot_curves) - 1:
+            return
+        
+        color = self.get_order_color_img(order_idx) if set_color is None else set_color
+        
+        # Color already correct
+        if self.order_plot_curves[order_idx].get_color() == color:
+            return
+        
+        # Change color
+        self.order_plot_curves[order_idx].set_color(color)
+        
+        # Draw plot again and wait for drawing to finish
+        if redraw_canvas:
+            self.canvas.draw()
+            self.canvas.flush_events() 
+    
+    
+    
+    def redraw_all_bounds_points(self, redraw_canvas = False):
+        for order_idx in range(len(self.calib_data_dynamic)):
+            self.redraw_order_bounds_points(order_idx)
+        
+        # Draw plot again and wait for drawing to finish
+        if redraw_canvas:
+            self.canvas.draw()
+            self.canvas.flush_events() 
+            
+    # Re-draw bounds
+    def redraw_order_bounds_points(self, order_idx, redraw_canvas = False):
+        x_start, x_end, y_start, y_end = self.calculate_order_bounds(order_idx)
+        self.order_bound_points[order_idx].set_xdata([x_start, x_end])
+        self.order_bound_points[order_idx].set_ydata([y_start, y_end])
+        
+        # Draw plot again and wait for drawing to finish
+        if redraw_canvas:
+            self.canvas.draw()
+            self.canvas.flush_events() 
+    
+    
+    def redraw_one_order_curve_color_spectr(self, order_idx, single_call = True, set_color = None, redraw_canvas = False):
+        if (order_idx is None) or (self.spectrum_curves is None):
+            return
+        
+        # Out of bounds
+        if order_idx > len(self.spectrum_curves) - 1:
+            return
+        
+        color = self.get_order_color_spectr(order_idx) if set_color is None else set_color
+        
+        # Color already correct
+        if self.spectrum_curves[order_idx].get_color() == color:
+            return
+        
+        # Change color
+        self.spectrum_curves[order_idx].set_color(color)
+        
+        # Draw plot again and wait for drawing to finish
+        if redraw_canvas:
+            self.canvas_spectrum.draw()
+            self.canvas_spectrum.flush_events()
+    
+    def redraw_spectrum(self, autoscale = False, force_scale = False, redraw_canvas = False):
+        
+        # Spectrum not yet drawn
+        if self.spectrum_curves is None:
+            return
+        
+        if not self.autoupdate_spectrum:
+            return
+        
+        drawn_nr = len(self.calib_data_dynamic)
+        plotted_nr = len(self.spectrum_curves)
+        
+        # Iterate over orders that user drew
+        for order_idx in range(drawn_nr):
+            
+            # Check if order plotted previously, update the order
+            if order_idx <= plotted_nr - 1:
+                self.redraw_spectrum_order(order_idx)
+            
+            # Plot the order
+            else:
+                self.draw_spectrum_order(order_idx)
+            
+        
+        # Delete plotted curves that have been removed by the user
+        if plotted_nr > drawn_nr:
+            for idx in range(drawn_nr, plotted_nr):
+                line = self.spectrum_curves[idx]
+                line.remove() # clear from plot
+                del self.spectrum_curves[idx] # delete list element
+        
+        
+        # rescale to fit
+        if force_scale or (self.autoscale_spectrum and autoscale):
+            self.rescale_spectrum()
+        
+        # Draw plot again and wait for drawing to finish
+        if redraw_canvas:
+            self.canvas_spectrum.draw()
+            self.canvas_spectrum.flush_events() 
+    
+    
+    def redraw_spectrum_order(self, order_idx, redraw_canvas = False):
+        wavelengths = self.orders_wavelengths[order_idx] # from right to left
+        intensities = self.orders_intensities[order_idx] # from right to left
+        
+        order_curve = self.spectrum_curves[order_idx]
+        color = self.get_order_color_spectr(order_idx)
+        
+        # Update curve data
+        order_curve.set_xdata(wavelengths)
+        order_curve.set_ydata(intensities)
+        order_curve.set_color(color)
+        
+        # Draw plot again and wait for drawing to finish
+        if redraw_canvas:
+            self.canvas_spectrum.draw()
+            self.canvas_spectrum.flush_events() 
+    
+    
+    def hide_unhide_orders(self, redraw_canvas = False):
+        
+        # Iterate over diffraction orders
+        for idx in range(len(self.calib_data_dynamic)):
+            #order = self.calib_data_dynamic[idx]
+            
+            self.order_plot_curves[idx].set_visible(self.show_orders)
+            self.order_plot_points[idx].set_visible(self.show_orders)
+            self.order_bound_points[idx].set_visible(self.show_orders)
+        
+        # Draw plot again and wait for drawing to finish
+        if redraw_canvas:
+            self.canvas.draw()
+            self.canvas.flush_events() 
+    
+    
+    def get_order_color_img(self, order_idx):
+        if order_idx is None:
+            return
+        
+        # Default - red
+        color = 'red'
+        
+        # Out of bounds - gray
+        if not self.calib_data_dynamic[order_idx].use_order:
+            color = 'darkgray'
+        
+        # Selected - white
+        if order_idx == self.selected_order_idx:
+            color = 'white'
+        
+        return color
+    
+    def get_order_color_spectr(self, order_idx):
+        if order_idx is None:
+            return
+        
+        # Default - pink/purple
+        if order_idx % 2 == 0:
+            color = 'tab:pink'
+        else:
+            color = 'tab:purple'
+        
+        # Out of bounds - gray
+        if not self.calib_data_dynamic[order_idx].use_order:
+            color = 'darkgray'
+        
+        # Selected - black
+        if order_idx == self.selected_order_idx:
+            color = 'deepskyblue'
+        
+        return color
+        
+    
+    #######################################################################################
+    # Misc
+    #######################################################################################
+    
+    
+    def check_order_amount_match(self):
+        dynamic_len = len(self.calib_data_dynamic) # nr of drawn curves
+        static_len = bounds_data.shape[0] # nr of orders in bounds data
+        
+        # Let user know if drawn orders amount doesn't match with bounds data
+        if dynamic_len != static_len:
+            print(f'Warning! Bounds data has {static_len} rows, but there are {dynamic_len} drawn orders.')
+            self.set_feedback(f'Warning! Bounds data has {static_len} rows, but there are {dynamic_len} drawn orders.', 10000)
+        
+    
+    # Requires self.overwrite_bounds_data() call before
+    def calculate_order_bounds(self, order_idx):
+        static_idx = self.get_bounds_data_idx(order_idx)
+        [px_start, px_end] = self.bounds_px[static_idx]
+        
+        coefs = self.orders_y_px_poly_coefs[order_idx]
+        y_start = np.polynomial.polynomial.polyval(px_start, coefs)
+        y_end = np.polynomial.polynomial.polyval(px_end, coefs)
+        
+        return px_start, px_end, y_start, y_end
+    
+    
+    # Assumes that each order instance has been updated (avg_y is correct)
+    # Respects the lists indices - everything works afterwards like there was no sort needed
+    # Calling function must not take local order_idx as argument because self.sort_orders() doesn't change it
+    def sort_orders(self, sort_plots = True):
+        
+        # Get topmost point's y-coordinate and get indices to sort by
+        y_values = [np.min(obj.ylist) for obj in self.calib_data_dynamic]
+        sorted_idx = np.argsort(y_values) # top curves are low order nrs
+        
+        # Check if something changes
+        is_sorted = np.array_equal(sorted_idx, np.arange(len(sorted_idx)))
+        if is_sorted:
+            return False
+        
+        # Sort orders
+        self.calib_data_dynamic = [self.calib_data_dynamic[idx] for idx in sorted_idx]
+        
+        # Sort corresponding plot objects if they're initialized
+        if sort_plots:
+            # Image stuff
+            self.orders_y_px_poly_coefs = [self.orders_y_px_poly_coefs[idx] for idx in sorted_idx]
+            self.orders_y_values = [self.orders_y_values[idx] for idx in sorted_idx]
+            self.order_plot_points = [self.order_plot_points[idx] for idx in sorted_idx]
+            self.order_plot_curves = [self.order_plot_curves[idx] for idx in sorted_idx]
+            self.order_bound_points = [self.order_bound_points[idx] for idx in sorted_idx]
+            
+            # Spectrum stuff
+            # x_pixels and wavelengths aren't locked to drawn orders but rather to the index, so no sorting
+            #self.orders_x_pixels = [self.orders_x_pixels[idx] for idx in sorted_idx]
+            #self.orders_wavelengths = [self.orders_wavelengths[idx] for idx in sorted_idx]
+            #self.orders_intensities = [self.orders_intensities[idx] for idx in sorted_idx]
+            self.spectrum_curves = [self.spectrum_curves[idx] for idx in sorted_idx]
+            
+        
+        # Re-select the correct order
+        idxs = np.where(sorted_idx == self.selected_order_idx)[0] # get indices of rows where idx is the same, can be None
+        self.selected_order_idx = None if len(idxs) == 0 else idxs[0]
+        
+        idx_changed = True
+        return idx_changed
+   
+    # Get z-values of corresponding x and y values and cut them according to left and right bounds
+    def compile_full_spectrum(self):
+        x_values = np.concatenate(self.orders_wavelengths[::-1]) # reverse order
+        z_values = np.concatenate(self.orders_intensities[::-1]) # reverse order
+        return x_values, z_values
+    
+    # Iterate over orders and save the order number as a complement to the x and z values
+    def get_spectrum_order_nrs(self):
+        order_nrs_list = []
+        for order_idx in range(len(self.calib_data_dynamic) - 1, -1, -1): # reverse order
+            order_nr = self.get_order_nr_from_idx(order_idx)
+            order_nrs_list.append(np.full(len(self.orders_wavelengths[order_idx]), order_nr))
+        
+        order_nrs = np.concatenate(order_nrs_list)
+        return order_nrs
+    
     
     # Check if order is too close to top edge of image
     def if_needs_cutting(self, order_idx):
@@ -2485,36 +2627,7 @@ class calibration_window():
             return True
         else:
             return False
-            
 
-
-
-# Calculate points of polynomial for plotting
-def get_polynomial_points(order, arr_length, flip = False):
-    # get regression coeficients
-    poly_coefs = np.polynomial.polynomial.polyfit(order.xlist, order.ylist, 2)
-    
-    if flip: # treat x as y and y as x
-        use_coefs = np.polynomial.polynomial.polyfit(order.ylist, order.xlist, 2)
-    else: # normal
-        use_coefs = poly_coefs
-    
-    # get array of points on image for the polynomial
-    curve_array = np.empty(arr_length)
-    for idx in range(arr_length):
-        curve_array[idx] = np.polynomial.polynomial.polyval(idx, use_coefs)
-    
-    
-    # clip the values
-    curve_array = np.clip(curve_array, 0, arr_length - 1)
-    
-    return curve_array, poly_coefs
-
-# Take the x and y values and get quadratic fn for them. Then calculate the y at x.
-def simple_quadratic_interpolate(x, x_array, y_array):
-    coefs = np.polynomial.polynomial.polyfit(x_array, y_array, 2)
-    y = np.polynomial.polynomial.polyval(x, coefs)
-    return y
 
 
 ##############################################################################################################
