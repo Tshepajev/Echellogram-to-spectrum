@@ -24,7 +24,7 @@ Outputs:
 # CONSTANTS
 ##############################################################################################################
 
-# If working_path is None then the same folder will be used for all inputs and outputs where the code is executed
+# If working_path is None then the same folder will be used where the code is executed
 # If you aren't using Windows then paths should have / instead of \\ (double because \ is special character in strings)
 working_path = None
 system_path_symbol = '\\' # Gets checked later
@@ -63,7 +63,7 @@ def main_program():
     
 
 # if program is in automatic mode (you don't execute it for a Python IDE and change the code here) then 
-# use all input and output paths as the folder where the script (.py file) is executed from
+# uses the folder where the script (.py file) is executed from
 def get_path():
     
     # root path as the location where the python script was executed from 
