@@ -4,16 +4,20 @@
 # The data contains wavelengths, intensities, order nrs and metadata (at the end of the file).
 # The script also extracts aif data (orders info) from aryx that can be used to create Vertical_points.csv
 
-# https://gitlab.com/ltb_berlin/ltb_files
-import ltbfiles
-import numpy
-import zipfile
-
 #aryxpath = r'E:\Research_analysis\2024.09 JET\Lab_comparison_test\Raw data\test_12_08_2024\DHLamp__0001.aryx'
 #aryxpath = r'E:\Research_analysis\2024.09 JET\Lab_comparison_test\Raw data\492 - 2X08 - R7 C3-C7 Be ref\492_2X8_R7C3C7_0001 2X08 - R7 C3-C7.aryx'
 aryxpath = r'E:\Research_analysis\2024.09 JET\Lab_comparison_test\Raw data\20_14WLH_AR3C1\ARYELLE SPECTROMETER\Aryelle_0001.aryx'
 
 outputpath = r'E:\Nextcloud sync\Data_processing\Projects\2024_09_JET\Lab_comparison_test\Photo_to_spectrum\Analysis\aryx export\\'
+
+
+# These are included in Python Standard Library (comes with Python)
+import zipfile
+
+# Must be installed if IDE doesn't have these installed already
+import ltbfiles # (https://pypi.org/project/ltbfiles/) - https://gitlab.com/ltb_berlin/ltb_files
+import numpy # (https://pypi.org/project/numpy/)
+
 
 def main():
     extract_aryx_spectrum(aryxpath)

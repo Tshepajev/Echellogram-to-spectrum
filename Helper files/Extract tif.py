@@ -3,12 +3,14 @@
 # The script reads Sophy nXt .tif files and exports the data to .csv files.
 # The data contains Echellogram (2D intensity matrix) and metadata.
 
-# https://gitlab.com/ltb_berlin/ltb_files
-import ltbfiles
-import numpy
-
 imgpath = r'E:\Research_analysis\2024.09 JET\Lab_comparison_test\Photo_to_spectrum\Test\492_2X8_R7C3C7_0001 2X08 - R7 C3-C7.tif'
 outputpath = r'E:\Nextcloud sync\Data_processing\Projects\2024_09_JET\Lab_comparison_test\Photo_to_spectrum\Analysis\aryx export\\'
+
+
+# Must be installed if IDE doesn't have these installed already
+import ltbfiles # (https://pypi.org/project/ltbfiles/) - https://gitlab.com/ltb_berlin/ltb_files
+import numpy # (https://pypi.org/project/numpy/)
+
 
 def main():
     extract_img_data(imgpath)

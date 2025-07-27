@@ -1,5 +1,5 @@
 # Author: Jasper Ristkok
-# v3.0
+# Processor v3.0
 
 '''
 Code to batch-convert all echellograms (photos) in a folder to spectrum using
@@ -33,6 +33,23 @@ system_path_symbol = '\\' # Gets checked later
 # IMPORTS
 ##############################################################################################################
 
+'''
+If you are running the code throught a Python IDE (not .exe) then you need to make sure that your IDE has
+these modules installed, so the code can access them. E.g. if you don't have Numpy installed then you get
+"ModuleNotFoundError: No module named numpy"
+
+Installing modules is straightforward, but since every IDE has different locations for the button, it's best
+if you refer to Google. E.g. if you're using Visual Studio Code then the search query would be: 
+"How to install Python modules in Visual Studio Code?"
+
+The list of imported module names that you need to install are:
+numpy (https://pypi.org/project/numpy/)
+pillow (https://pypi.org/project/pillow/)
+scipy (https://pypi.org/project/scipy/)
+'''
+
+
+# These are included in Python Standard Library (comes with Python)
 import math
 import os
 import re # regex
@@ -40,8 +57,9 @@ import json
 import platform
 import copy
 
+# Must be installed if IDE doesn't have these installed already
 import numpy as np
-from PIL import Image as PILImage
+from PIL import Image as PILImage # pillow
 from scipy.interpolate import interp1d
 
 ##############################################################################################################

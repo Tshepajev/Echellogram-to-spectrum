@@ -1,5 +1,5 @@
 # Author: Jasper Ristkok
-# v3.2
+# Calibrator v3.2
 
 # Code to convert an echellogram (photo) to spectrum
 
@@ -65,21 +65,42 @@ dbg = False
 # IMPORTS
 ##############################################################################################################
 
-import numpy as np
+'''
+If you are running the code throught a Python IDE (not .exe) then you need to make sure that your IDE has
+these modules installed, so the code can access them. E.g. if you don't have Numpy installed then you get
+"ModuleNotFoundError: No module named numpy"
+
+Installing modules is straightforward, but since every IDE has different locations for the button, it's best
+if you refer to Google. E.g. if you're using Visual Studio Code then the search query would be: 
+"How to install Python modules in Visual Studio Code?"
+
+The list of imported module names that you need to install are:
+numpy (https://pypi.org/project/numpy/)
+pillow (https://pypi.org/project/pillow/)
+scipy (https://pypi.org/project/scipy/)
+matplotlib (https://pypi.org/project/matplotlib/)
+'''
+
+
+# These are included in Python Standard Library (comes with Python)
 import math
 import os
 import copy
 import re # regex
 import json
-import tkinter # Tkinter
+import platform
+import tkinter # "Tkinter"
 from tkinter import ttk
+if dbg:
+    import functools
+    import types
 
-from PIL import Image as PILImage
+# Must be installed if IDE doesn't have these installed already
+import numpy as np
+from PIL import Image as PILImage # pillow
 from matplotlib import pyplot as plt
 import matplotlib.colors as mcolors
 from  matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
-
-import platform
 
 
 ##############################################################################################################
@@ -88,8 +109,6 @@ import platform
 
 # Low priority, so taken from Chatgpt
 if dbg:
-    import functools
-    import types
     function_call_nr = {}
     
     # Debugging wrapper to print function calls

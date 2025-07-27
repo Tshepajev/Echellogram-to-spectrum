@@ -16,10 +16,14 @@ path = None
 #path = r'E:\Research_analysis\2024.09 JET\Lab_comparison_test\Raw data'
 #path += system_path_symbol
 
-import ltbfiles
-import numpy
+
+# These are included in Python Standard Library (comes with Python)
 import os
 import platform
+
+# Must be installed if IDE doesn't have these installed already
+import ltbfiles # (https://pypi.org/project/ltbfiles/)
+import numpy # (https://pypi.org/project/numpy/)
 
 
 def main():
