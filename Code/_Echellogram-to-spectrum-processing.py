@@ -1,5 +1,5 @@
 # Author: Jasper Ristkok
-# Processor v3.0
+# Processor v3.0.1
 
 '''
 Code to batch-convert all echellograms (photos) in a folder to spectrum using
@@ -228,6 +228,10 @@ class processor_class():
         
         filenames = self.get_photos_in_folder(working_path)
         
+        if len(filenames) == 0:
+            raise Exception('No echellograms in folder: ' + str(working_path))
+            return
+        
         # Get the array size of echellograms
         self.check_tif_array_size(filenames)
         
@@ -276,10 +280,10 @@ class processor_class():
         json_filenames = get_folder_files_pattern(working_path, pattern = r'^_Calibration_data.*\.json$')
         
         if len(json_filenames) == 0:
-            raise Exception('_Calibration_data*.json not found')
+            raise Exception('_Calibration_data*.json not found in folder: ' + str(working_path))
         
         if len(json_filenames) > 1:
-            print('Warning! More than one .json calibration file detected.')
+            print('Warning! More than one .json calibration file detected in folder: ' + str(working_path))
         
         json_filename = json_filenames[0]
         with open(working_path + json_filename, 'r') as file: # allow crashing if no file
