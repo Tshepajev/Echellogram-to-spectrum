@@ -69,7 +69,7 @@ Here are all modules required by any of the scripts (including helper files):
 
 ### Creating Calibration Data
 
-1. Place the **Calibrator** (.py or .exe) in the folder with the echellograms. If you run into filepath errors then you can either insert the actual filepath into the GUI field `Directory path` or manually use the `working_path` variable in the beginning of **Calibrator** code (line 45). If you use the latter then you need to use the code directly (not `.exe`s).
+1. **Optional for v3.3+** Place the **Calibrator** (.py or .exe) in the folder with the echellograms. If you run into filepath errors then you can either insert the actual filepath into the GUI field `Directory path` or manually use the `working_path` variable in the beginning of **Calibrator** code (line 45). If you use the latter then you need to use the code directly (not `.exe`s).
 2. **Optional** (recommended): Place the previous correct calibration data `_Calibration_data*.json` file (* can be anything) in the same folder with the echellograms.
     - **Optional** (strongly recommended): Back up the calibration data before running **Calibrator** if you haven't renamed the calibration data (since it will overwrite the file when saving calibration data).
 	- **Warning!** Make sure there is max one calibration data file or the program will choose a random one.
@@ -80,17 +80,26 @@ Here are all modules required by any of the scripts (including helper files):
       The px → wavelength conversion is quadratic, but close to linear, so the middle point is strongly recommended.
     - Place the compiled **`_Vertical_points*.csv`** in the same folder as the echellograms.
 	- **Warning!** Make sure there is max one bounds data file or the program will choose a random one.
-4. Run **Calibrator**.
-5. Create or fine-tune the calibration data using the GUI. The most important adjustments are **vertical** and **horizontal shifts**, the **first order number**, and the order **curve shape**.  
+4. Run **Calibrator**. If you didn't do step 1. then copy-paste the echellograms' folder path into the **Directory path** input field and press "Save variables" button.
+5. If you have multiple experiment series in the folder then insert the correct filename into **Use sample** input field and press "Save variables" button. The filename has to have the first index of the series (contains "_00001" or "_0001" or "_001"), then the first echellograms of the series are averaged. Otherwise the filename is considered a standalone file (series with one file) and only the direct match is used. Correct filename is e.g. "abc_001_def.tif".
+6. Create or fine-tune the calibration data using the GUI. The most important adjustments are **vertical** and **horizontal shifts**, the **first order number**, and the order **curve shape**.
+	
+	Simplified instructions:
+	- Make sure the topmost drawn curve is associated with **first order number**. That is, unless there is a large **vertical shift**, the wavelength of any spectral line in Sophi output and in the current spectrum is roughly the same. Also, the diffraction order number in Sophi and shown when selecting an order in Calibrator need to match for a given line. 
+	- Adjust **vertical shift**, until ghost lines are same height on both sides of a given line.
+	- Adjust **horizontal shift**, until the given line is exactly at the correct wavelength.
+	- Move the individual **polynomial curves**, so that they are on top of the bright curves on the echellogram. 
+	- Make sure the **vertical** and **horizontal shifts** still apply for the new curves.
+	
     Consider the following:
     - Does the curve align with the bright line on the echellogram? Also, are the ghost lines approximately the same intensity on both sides of the main line? (**curve shape** and **vertical shift**)
     - Is a given wavelength in the correct order, as in Sophi nXt? (**first order number**)
     - Does the wavelength match with Sophi nXt? (**first order number** and **horizontal shift**, a little bit of **curve shape**)
 	- The optimal way of doing things is to have the bounds data as large as possible (starts from smallest order nr in JET campaign experiments) and the corresponding amount of orders drawn. The program excludes the orders that are out of bounds by default.
     - **Optional** (strongly recommended): Check multiple different samples for curve alignment (**curve shape**). The alignment difference between samples should only be **the shifts**.
-6. Save the calibration data (this will overwrite the existing file, so **make backups!**).
-7. **Optional**: Output other data like the compiled spectrum for checking.
-8. **Optional** (recommended): Clean up by removing files from the folder unless it's a dedicated test folder.
+7. Save the calibration data (this will overwrite the existing file, so **make backups!**).
+8. **Optional**: Output other data like the compiled spectrum for checking.
+9. **Optional** (recommended): Clean up by removing files from the folder unless it's a dedicated test folder.
 
 ### Processing Echellograms
 
@@ -137,14 +146,14 @@ Otherwise don't be afraid to press the buttons and test what they do.
 
 If run with the default parameters, then **Calibrator** checks where the script that was run is located. This folder will be the root folder for the program.\
 **Calibrator** will check for echellograms in the folder and will take a random sample automatically. E.g. if you have sample 24 series (`sample_24_0001.tif`, `sample_24_0002.tif` etc.) and sample 492 series in the same folder then one of those series will be automatically chosen.\
-**Calibrator** will average first 20 echellograms of that sample series and average these.
+**Calibrator** will average first **Average photos target** nr. echellograms of that sample series and average these.
 
 
 **Input data:**
 Then **Calibrator** will read `"_Calibration_data*.json"` (* can be anything) if it exists in the folder. If there are multiple such files in the folder then a random one is chosen, so it's important to keep the folder tidy. E.g. you can rename a file to `"_xCalibration_..."` for it to not be read.
 According to the data in `"_Calibration_data.json"`, **Calibrator** draws diffraction orders on the echellogram (quadratic fn with 3 points each). Each of these orders and their bounds are used to compile the spectrum. Higher wavelength means higher px nr (right on image) and lower order nr (up on image).\
 For **v2**, **Calibrator** will read `"_Vertical_points.csv"` as bounds data (has to exist). **Calibrator v3** doesn't require `"_Vertical_points.csv"`, since the underlying bounds data is constant and included in the code.\
-The bounds data defines horizontally (x-value) between which pixels the order is considered. Also, it defines which are the associated wavelengths of each pixel. The px => wl conversion is quadratic function (almost linear but linear might produce up to 0.4 nm errors for low order nrs). That is why it needs 3 datapoints (px and wavelength) and why `aif` file inside `.aryx` file isn't that useful.
+The bounds data defines horizontally (x-value) between which pixels the order is considered. Also, it defines which are the associated wavelengths of each pixel. The px => wl conversion is quadratic function (almost linear but linear might produce up to 0.4 nm errors for low order nrs). That is why it needs 3 datapoints (px and wavelength) and why `aif` file inside `.aryx` file isn't that useful. For the same reason, I think Sophi uses straight horizontal curves which wouldn't be correct.
 
 **Calibrator** will calculate the wavelengths and intensities of the spectrum from the diffraction orders, between the pre-defined bounds. Wavelengths are quadratic function of the horizontal pixel index. I there's only two points (e.g. in **v2**) then linear function is used with close but not precise wavelengths.\
 The intensity is the integral (sum) of pixel values vertically, so that the integral is from half way between current and top order until half way between current and bottom order. E.g. the currect pixel is at coordinates `(x,y = 550, 256)` and the top order is at `y = 250` and the bottom order is at `y = 260`. Then the integral is at `x = 550` from `y = 253` to `y = 258`. In the future, I might do interpolation and precise integral (instead of summing pixels) and enable Gaussian weights (center px has higher weight than distant px).
@@ -199,7 +208,7 @@ Orders are essentially aligned with the "perfect" Hg lamp image that's saved int
 Otherwise don't be afraid to press the buttons and test what they do.
 
 ### Input fields
-- **Use sample** – you can change the automatically chosen sample but you have to input the exact filename. Also the input must be the one with `_0001` index. The hardcoding is necessary because the naming convention in JET failed (many different formats).
+- **Use sample** – you can change the automatically chosen sample but you have to input the exact filename including the extension. Also the input must be the one with the first index, e.g. `_0001`. The hardcoding is necessary because the naming convention in JET failed (many different formats). If the filename doesnt' contain `_00001` or `_0001` or `_001` then the series is considered to be 1 file long and only the direct match filename is used.
 - **Directory path** – you can change working directory but it might be easier to simply move `.py` and input files.
 - **Average photos target** – how many echellograms to average starting from first index. If there aren't enough echellograms in the series then the existing amount is used instead.
 - **Overwrite first order nr** – if the actual order nr of the topmost drawn order is different than the smallest order nr defined in bounds data, then this setting defines which order nr is given to the topmost diffraction order. This setting is important when compiling spectrum and exporting calibration data.
