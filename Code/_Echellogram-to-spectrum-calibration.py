@@ -1,5 +1,5 @@
 # Author: Jasper Ristkok
-# Calibrator v3.2
+# Calibrator v3.3
 
 # Code to convert an echellogram (photo) to spectrum
 
@@ -252,7 +252,7 @@ def prepare_photos(series_filename = None, average_nr = 1):
     exif_data = None
     
     # Get files
-    averaged_files = get_folder_files(averaged_path, return_all = True)
+    averaged_files = get_folder_files_pattern(averaged_path, pattern = '.+\.tif$')
     
     if len(averaged_files) > 0:
         random_file = averaged_files[0] # take first file in folder, has _0001 due to sorting
@@ -265,8 +265,12 @@ def prepare_photos(series_filename = None, average_nr = 1):
     else:
         identificator = series_filename
     
-    # strip _0001 from the filename
-    averaged_name = 'average_' + identificator.replace('_0001', '')
+    # strip _0001 type index from the filename
+    identificator_avg = identificator.replace('_00001', '')
+    identificator_avg = identificator_avg.replace('_0001', '')
+    identificator_avg = identificator_avg.replace('_001', '')
+    
+    averaged_name = 'average_' + identificator_avg
     
     # Load pre-existing averaged Echellogram
     if script_manual_mode and (averaged_name in averaged_files): # averaging done previously
@@ -276,7 +280,7 @@ def prepare_photos(series_filename = None, average_nr = 1):
     else:
         input_files = get_folder_files(input_photos_path, series_filename = identificator)
         
-        if len(input_files) == 0:
+        if (input_files is None) or (len(input_files) == 0):
             raise Exception('Error: no files in input folder: ' + str(input_photos_path))
         
         average_array, exif_data = average_photos(input_files, average_nr = average_nr)
@@ -354,6 +358,9 @@ def load_calibration_data():
     
     # calibration done previously, load that data
     json_filenames = get_folder_files_pattern(input_data_path, pattern = r'^_Calibration_data.*\.json$')
+    
+    if json_filenames is None:
+        return
     
     if len(json_filenames) > 0:
         if len(json_filenames) > 1:
@@ -516,14 +523,14 @@ class calibration_window():
     
     def init_class_variables(self):
         self.working_path = working_path
-        self.series_filename = series_filename # filename (for shot series) to use where index is _0001 but without file extension (.tif)
+        self.series_filename = series_filename # filename (for shot series) to use where index is _0001 and with file extension (.tif)
         self.average_photos_nr = average_photos_nr
         
         self.ignore_top_orders = True
         self.autoscale_spectrum = False
         self.shift_wavelengths = True # If self.shift_wavelengths == True then wavelengths are locked to order curves, otherwise to pixels on image
         self.shift_only_bounds_right = True # keeps curves on same location on image during horizontal shift
-         
+        
         self.reset_class_variables_soft()
     
     # Gets also called on path change (new folder might contain different calibration data/bounds file). 
@@ -531,7 +538,7 @@ class calibration_window():
         
         # Calibration data
         self.origin_shift_right = origin_shift_right
-        self.first_order_nr = None
+        self.first_order_nr = 0
         self.total_shift_right = None
         self.total_shift_up = None
         self.total_shift_right_orig = None
@@ -566,6 +573,8 @@ class calibration_window():
         
         self.spectrum_total_intensity = 0
         
+        # Holds the echellogram plot. If this is None then matplotlib stuff needs to be initialized
+        self.canvas = None
         
     
     #######################################################################################
@@ -827,13 +836,13 @@ class calibration_window():
             self.set_feedback(str(e), 10000)
             
             # Print where exactly the exeption was raised
-            print("Exception occurred in functiontree:")
             tb = e.__traceback__
-            while tb.tb_next:  # Walk to the last traceback frame (where exception was raised)
-                print(tb.tb_frame.f_code.co_name)
+            error_tree = str(tb.tb_frame.f_code.co_name)
+            tb = tb.tb_next
+            while tb:  # Walk to the last traceback frame (where exception was raised)
+                error_tree += ' => ' + str(tb.tb_frame.f_code.co_name)
                 tb = tb.tb_next
-            print(tb.tb_frame.f_code.co_name)
-        
+            print("Exception occurred in functiontree:", error_tree)
         
     
     def load_sample_data(self):
@@ -848,8 +857,7 @@ class calibration_window():
         
         # sample specified but not found
         if identificator != self.series_filename:
-            print('Sample not in input files, found: ' + identificator)
-            raise Exception('Sample not in input files, found: ' + identificator)
+            raise Exception('Sample not in input files, found: ' + identificator + '\tIf you want to continue, copy the found file into \"Use sample\" field')
         
         photo_array, calibration_data = process_photo(average_array)
         
@@ -1003,7 +1011,8 @@ class calibration_window():
         shift_orders_amount_up = float(self.shift_orders_up_var.get())
         shift_orders_amount_right = float(self.shift_orders_right_var.get())
         
-        
+        if new_sample == "None":
+            new_sample = None
         
         # Empty the variables
         #self.input_path_var.set('')
@@ -1237,6 +1246,10 @@ class calibration_window():
     def load_order_points(self, is_button_call = True):
         
         filenames = get_folder_files_pattern(input_data_path, pattern = r'^_Order_points.*\.csv$')
+        
+        if filenames is None:
+            self.set_feedback('_Order_points*.csv not found')
+            return
         
         if len(filenames) > 0:
             filename = filenames[0]
@@ -2128,6 +2141,11 @@ class calibration_window():
     
     
     def clear_plots(self):
+        
+        # Plot isn't loaded yet (e.g. bad folder)
+        if self.canvas is None:
+            return
+        
         # Clear plot
         #self.photo_fig.clf()
         self.canvas._tkcanvas.destroy()
@@ -2144,6 +2162,8 @@ class calibration_window():
     
     # Draw main heatmap
     def draw_plot(self, identificator = ''):
+        
+        # Matplotlib figure, also does a proper reset every time it's called
         self.photo_fig = plt.figure()
         
         # Attach figure to the Tkinter frame
@@ -2264,17 +2284,18 @@ class calibration_window():
     # Update visual things
     #######################################################################################
     
-    def clear_feedback(self):
+    def clear_feedback(self, chars = 0):
         #self.feedback_text.config(text = '')
-        self.feedback_text.delete("1.0", tkinter.END)
+        self.feedback_text.delete(tkinter.END + "-" + str(chars) + "c", tkinter.END)
     
     def set_feedback(self, string, delay = 5000):
         delay = clip(delay, 2000, 10000)
         
-        self.feedback_text.insert("1.0", string + '\n')
+        text = string + '\n'
+        self.feedback_text.insert("1.0", text)
         
         #self.feedback_text.config(text = string)
-        self.feedback_text.after(delay, self.clear_feedback) # clear feedback after delay
+        self.feedback_text.after(delay, self.clear_feedback, len(text) + 1) # clear feedback after delay
     
     
     
@@ -2554,6 +2575,9 @@ class calibration_window():
     
     
     def check_order_amount_match(self):
+        if self.calib_data_dynamic is None:
+            return
+        
         dynamic_len = len(self.calib_data_dynamic) # nr of drawn curves
         static_len = bounds_data.shape[0] # nr of orders in bounds data
         
@@ -2654,43 +2678,64 @@ class calibration_window():
 ##############################################################################################################
 
 # https://stackoverflow.com/questions/3207219/how-do-i-list-all-files-of-a-directory
-# Either returns all files in folder or returns files that match the series_filename string where _0001 number may change
-# series_filename HAS to be in the format 'whatever_0001.tif' or 'whatever_0001_abc.tif'
+# Returns all files in folder that match the series_filename string where _0001 number may change
+# series_filename HAS to be in the format 'whatever_0001.tif' or 'whatever_0001_abc.tif'.
 # That is, '_0001' exact substring HAS to be in the series_filename string (this has to be hardcoded)
 # If series_filename is specified then code tries to find the files with the sample name, otherwise takes first name 
-# (best result is if only one sample series is in folder)
-def get_folder_files(path, series_filename = None, return_all = False):
+# (best result is if only one sample series is in folder).
+# If the name doesn't have _0001 then it's assumed to be the only shot in the series and only that is returned.
+def get_folder_files(path, series_filename = None):
     
     # There's both identificator_start and identificator_end because sometimes _0001 is in the middle of the file name
     identificator_start = None
     identificator_end = None
     
     # Get files, not directories
-    onlyfiles = [f for f in os.listdir(path) if os.path.isfile(os.path.join(path, f))]
-    onlyfiles.sort() # sort filenames, so _0001 is before _0002
-    
-    
-    # Extract all files
-    if return_all:
-        return onlyfiles
+    onlyfiles = get_folder_files_all(path)
     
     # Extract only files that match the (identificator_start + '_0001' + identificator_end + '.tif')
+    # This part is messy because of broken naming convention from experiments at JET.
+    # I have to harcode _0001 here because there's e.g. 
+    # '14IWG1A_11a_P11_gate_1000ns_delay_1000ns_0001.tif' and
+    # '492_2X8_R7C3C7_0001 2X08 - R7 C3-C7.tif' in the files
+    
+    # take the first filename, this should contain '_0001' after sorting
+    if series_filename is None:
+        name = onlyfiles[0]
     else:
-        
-        # This part is messy because of broken naming convention from experiments at JET.
-        # I have to harcode _0001 here because there's e.g. 
-        # '14IWG1A_11a_P11_gate_1000ns_delay_1000ns_0001.tif' and
-        # '492_2X8_R7C3C7_0001 2X08 - R7 C3-C7.tif' in the files
-        
-        # take the first filename, this should contain '_0001' after sorting
-        if series_filename is None:
-            name = onlyfiles[0]
-        else:
-            name = series_filename
-        
-        # get file identificator start and end
-        digits_pattern = r'^(.*?)_0001(.*?)$' # I have to hardcode _0001 like this because naming convention at JET failed
+        name = series_filename
+    
+    # TODO: Check also _001 and _00001 in case some files have different format
+    
+    # get file identificator start and end
+    # check _00001
+    digits_pattern = r'^(.*?)_00001(.*?)$' # I have to hardcode _0001 like this because naming convention at JET failed
+    regex_result = re.search(digits_pattern, name)
+    
+    # check _0001
+    if regex_result is None:
+        digits_pattern = r'^(.*?)_0001(.*?)$'
         regex_result = re.search(digits_pattern, name)
+    
+    # check _001
+    if regex_result is None:
+        digits_pattern = r'^(.*?)_001(.*?)$'
+        regex_result = re.search(digits_pattern, name)
+    
+    
+    # No match for _0001 type index, assume that it's a direct filename (without index)
+    if regex_result is None:
+        
+        # File exists in folder, return direct match
+        if name in onlyfiles:
+            return [name]
+        
+        # The file isn't in folder
+        else:
+            return
+    
+    # _0001 type index exists
+    else:
         identificator_start = regex_result[1]
         identificator_end = regex_result[2]
         
@@ -2698,22 +2743,30 @@ def get_folder_files(path, series_filename = None, return_all = False):
         identificator_start = re.escape(identificator_start)
         identificator_end = re.escape(identificator_end)
         
-        
         # Compile the pattern (even if _0001 is in the middle of the name)
         pattern = '^' + identificator_start + r'_\d+?' + identificator_end + '$'
-        
-        output_files = [f for f in onlyfiles if re.search(pattern, f)]
     
+    output_files = [f for f in onlyfiles if re.search(pattern, f)]
     return output_files
 
-def get_folder_files_pattern(path, pattern = None, return_all = False):
+
+# Return all files in folder
+def get_folder_files_all(path):
     
     # Get files, not directories
     onlyfiles = [f for f in os.listdir(path) if os.path.isfile(os.path.join(path, f))]
-    onlyfiles.sort() # sort filenames
+    onlyfiles.sort() # sort filenames, so _0001 is before _0002 and _0010 (but abc_1 is after abc_10)
+    
+    return onlyfiles
+
+# Return all files in folder that match the pattern
+def get_folder_files_pattern(path, pattern = None):
+    
+    # Get files, not directories
+    onlyfiles = get_folder_files_all(path)
     
     # Extract all files
-    if return_all or (pattern is None):
+    if pattern is None:
         return onlyfiles
     
     output_files = [f for f in onlyfiles if re.search(pattern, f)]
