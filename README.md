@@ -57,6 +57,16 @@ There are different folders in the repository:
 
 ## Instructions
 
+If you aren't using `.exe`s but run code through an IDE then you need to make sure that you have the necessary Python modules installed. The required modules are defined at the start of every `.py` script under `IMPORTS` section. Most modules should be already installed via [Python Standard Library](https://docs.python.org/3/library/index.html). For how to install the modules for your IDE, you should google it. E.g. if you're using Visual Studio Code then the search query would be: "How to install Python modules in Visual Studio Code?" Any decent IDE installs the required modules for the currently installing one automatically. I'm using Thonny and Spyder through Anaconda Navigator.
+
+Here are all modules required by any of the scripts (including helper files):
+- Standard Python Library (e.g. for math or Tkinter) - should come pre-installed
+- numpy (https://pypi.org/project/numpy/)
+- pillow (https://pypi.org/project/pillow/)
+- scipy (https://pypi.org/project/scipy/)
+- matplotlib (https://pypi.org/project/matplotlib/)
+- ltbfiles (https://pypi.org/project/ltbfiles/) - only used for helper files
+
 ### Creating Calibration Data
 
 1. Place the **Calibrator** (.py or .exe) in the folder with the echellograms. If you run into filepath errors then you can either insert the actual filepath into the GUI field `Directory path` or manually use the `working_path` variable in the beginning of **Calibrator** code (line 45). If you use the latter then you need to use the code directly (not `.exe`s).
